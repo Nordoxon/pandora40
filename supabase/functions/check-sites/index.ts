@@ -305,6 +305,23 @@ async function kort40FetchSlots(jar: CookieJar, date: string): Promise<unknown> 
   }
 }
 
+/** Fetch logged-in user profile — used to diagnose account-specific blocks. */
+async function kort40FetchProfile(jar: CookieJar): Promise<unknown> {
+  const res = await fetch(`${KORT40_BASE}/api/profile/`, {
+    headers: {
+      'User-Agent': UA,
+      Accept: 'application/json',
+      Referer: `${KORT40_BASE}/`,
+      Cookie: jarToHeader(jar),
+      'X-CSRFToken': jar.csrftoken ?? '',
+    },
+  });
+  const text = await res.text();
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { parsed = { _raw: text.slice(0, 500) }; }
+  return { _status: res.status, ...(parsed as object) };
+}
+
 interface NormalizedSlot {
   key: string;
   date: string;
@@ -352,6 +369,58 @@ function extractAvailableSlots(data: unknown, date: string): NormalizedSlot[] {
 function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
   const out: ClassifiedSlot[] = [];
   const seen = new WeakSet<object>();
+
+  // kort40 actual format: { available_hours: [18,19,20], reserved: [6,7], hot_available: [13], detail?: "..." }
+  // Handle this top-level shape directly before generic walk.
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const root = data as Record<string, unknown>;
+    const hasHourArrays =
+      Array.isArray(root.available_hours) ||
+      Array.isArray(root.reserved) ||
+      Array.isArray(root.hot_available);
+    if (hasHourArrays) {
+      const pushHours = (arr: unknown, classification: SlotClassification, reason: string) => {
+        if (!Array.isArray(arr)) return;
+        for (const h of arr) {
+          const hour = typeof h === 'number' ? h : Number(h);
+          if (!Number.isFinite(hour)) continue;
+          const start = `${String(hour).padStart(2, '0')}:00`;
+          const end = `${String((hour + 1) % 24).padStart(2, '0')}:00`;
+          out.push({
+            key: `${date}|kort40|${start}`,
+            date,
+            startTime: start,
+            endTime: end,
+            court: 'kort40',
+            classification,
+            reason,
+            raw: { hour, source: reason },
+          });
+        }
+      };
+      pushHours(root.available_hours, 'available', 'available_hours');
+      pushHours(root.hot_available, 'available', 'hot_available');
+      pushHours(root.reserved, 'busy', 'reserved');
+      // If detail is present AND there are zero hours of any kind → season_blocked for this date
+      const total =
+        (Array.isArray(root.available_hours) ? root.available_hours.length : 0) +
+        (Array.isArray(root.reserved) ? root.reserved.length : 0) +
+        (Array.isArray(root.hot_available) ? root.hot_available.length : 0);
+      if (total === 0 && typeof root.detail === 'string') {
+        out.push({
+          key: `${date}|__day_blocked__`,
+          date,
+          startTime: '',
+          endTime: '',
+          court: '—',
+          classification: 'season_blocked',
+          reason: (root.detail as string).slice(0, 250),
+          raw: { detail: root.detail },
+        });
+      }
+      return out;
+    }
+  }
 
   function walk(node: unknown, ctx: { court?: string }) {
     if (!node || typeof node !== 'object') return;
@@ -551,6 +620,14 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   let jar = login.jar;
   let didReLogin = login.freshLogin;
 
+  // Log profile to diagnose account-specific issues (limits, banned, unverified, etc.)
+  try {
+    const profile = await kort40FetchProfile(jar);
+    console.log(`kort40 profile ${site.id}:`, JSON.stringify(profile).slice(0, 1500));
+  } catch (e) {
+    console.log(`kort40 profile fetch error: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   // 2) Probe today's date first
   const dates: string[] = [];
   const today = new Date();
@@ -676,25 +753,6 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     unknown: 0,
   };
   for (const c of allClassified) auditCounts[c.classification]++;
-
-  // If kort40 explicitly told us "booking unavailable" but the API still
-  // returns 200 with an empty list, surface that as season_blocked rows
-  // (one synthetic row per date) so the dashboard can show the reason.
-  if (allClassified.length === 0 && detailMessage) {
-    for (const d of dates) {
-      allClassified.push({
-        key: `${d}|__season_blocked__`,
-        date: d,
-        startTime: '',
-        endTime: '',
-        court: '—',
-        classification: 'season_blocked',
-        reason: detailMessage.slice(0, 250),
-        raw: { detail: detailMessage },
-      });
-      auditCounts.season_blocked++;
-    }
-  }
 
   await supabase.from('kort_slot_audit').delete().eq('site_id', site.id);
   if (allClassified.length > 0) {
@@ -915,6 +973,52 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const supabase = createClient(supabaseUrl, serviceKey);
+
+  // Diagnose mode: return raw kort40 responses for the configured account
+  // so we can see exactly what the site says about THIS user.
+  const url = new URL(req.url);
+  if (url.searchParams.get('diagnose') === 'kort40') {
+    const { data: site } = await supabase
+      .from('watched_sites')
+      .select('*')
+      .eq('monitor_type', 'kort40')
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle();
+    if (!site) {
+      return new Response(JSON.stringify({ error: 'no kort40 site' }), {
+        status: 404,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+    // Force fresh login to make sure stale session isn't masking the issue
+    await supabase.from('kort_session').delete().eq('site_id', site.id);
+    const login = await getKort40Session(supabase, site);
+    if (login.status !== 'ok') {
+      return new Response(JSON.stringify({ login }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+    const profile = await kort40FetchProfile(login.jar).catch((e) => ({ error: String(e) }));
+    const today = new Date();
+    const probeDates: string[] = [];
+    for (let i = 0; i < 7; i++) {
+      probeDates.push(new Date(today.getTime() + i * 86400000).toISOString().slice(0, 10));
+    }
+    const slots: Record<string, unknown> = {};
+    for (const d of probeDates) {
+      try {
+        slots[d] = await kort40FetchSlots(login.jar, d);
+      } catch (e) {
+        slots[d] = { error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+    return new Response(
+      JSON.stringify({ profile, slots }, null, 2),
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+    );
+  }
 
   // Optional: check a single site by id (used by "check now" button)
   let onlySiteId: string | null = null;
