@@ -568,6 +568,14 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   let jar = login.jar;
   let didReLogin = login.freshLogin;
 
+  // Log profile to diagnose account-specific issues (limits, banned, unverified, etc.)
+  try {
+    const profile = await kort40FetchProfile(jar);
+    console.log(`kort40 profile ${site.id}:`, JSON.stringify(profile).slice(0, 1500));
+  } catch (e) {
+    console.log(`kort40 profile fetch error: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   // 2) Probe today's date first
   const dates: string[] = [];
   const today = new Date();
