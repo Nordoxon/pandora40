@@ -2,7 +2,7 @@ import { Card } from "@/components/ui/card";
 import { AlertTriangle, CheckCircle2, Flag } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ru } from "date-fns/locale";
-import type { Site } from "./SiteCard";
+import type { KortSite } from "./KortConfigCard";
 
 export interface HistoryEntry {
   id: string;
@@ -12,9 +12,7 @@ export interface HistoryEntry {
   created_at: string;
 }
 
-export function HistoryFeed({ entries, sites }: { entries: HistoryEntry[]; sites: Site[] }) {
-  const siteMap = new Map(sites.map((s) => [s.id, s]));
-
+export function HistoryFeed({ entries, site }: { entries: HistoryEntry[]; site: KortSite | null }) {
   if (entries.length === 0) {
     return (
       <Card className="p-8 text-center text-sm text-muted-foreground bg-card/40 border-dashed">
@@ -26,7 +24,6 @@ export function HistoryFeed({ entries, sites }: { entries: HistoryEntry[]; sites
   return (
     <div className="space-y-2">
       {entries.map((e) => {
-        const site = siteMap.get(e.site_id);
         const Icon =
           e.event_type === "change"
             ? AlertTriangle
@@ -51,7 +48,7 @@ export function HistoryFeed({ entries, sites }: { entries: HistoryEntry[]; sites
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
                 <span className="font-mono-display text-sm truncate">
-                  {site?.label || site?.url || "—"}
+                  {site?.label || "kort40.online"}
                 </span>
                 <span className="text-xs text-muted-foreground shrink-0">
                   {formatDistanceToNow(new Date(e.created_at), { addSuffix: true, locale: ru })}
