@@ -1,5 +1,5 @@
 import { Card } from "@/components/ui/card";
-import { AlertTriangle, CheckCircle2, Flag } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Flag, Trophy, Pause } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ru } from "date-fns/locale";
 import type { KortSite } from "./KortConfigCard";
@@ -25,19 +25,27 @@ export function HistoryFeed({ entries, site }: { entries: HistoryEntry[]; site: 
     <div className="space-y-2">
       {entries.map((e) => {
         const Icon =
-          e.event_type === "change"
-            ? AlertTriangle
-            : e.event_type === "error"
-              ? AlertTriangle
-              : e.event_type === "baseline"
-                ? Flag
-                : CheckCircle2;
+          e.event_type === "season_open"
+            ? Trophy
+            : e.event_type === "season_close"
+              ? Pause
+              : e.event_type === "change"
+                ? AlertTriangle
+                : e.event_type === "error"
+                  ? AlertTriangle
+                  : e.event_type === "baseline"
+                    ? Flag
+                    : CheckCircle2;
         const tone =
-          e.event_type === "change"
-            ? "text-warning border-l-warning"
-            : e.event_type === "error"
-              ? "text-destructive border-l-destructive"
-              : "text-primary border-l-primary";
+          e.event_type === "season_open"
+            ? "text-primary border-l-primary"
+            : e.event_type === "season_close"
+              ? "text-muted-foreground border-l-muted-foreground"
+              : e.event_type === "change"
+                ? "text-warning border-l-warning"
+                : e.event_type === "error"
+                  ? "text-destructive border-l-destructive"
+                  : "text-primary border-l-primary";
 
         return (
           <div
