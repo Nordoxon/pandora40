@@ -788,18 +788,17 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       const d = batchDates[idx];
       if (r.status === 'fulfilled') {
         okResponses++;
-        if (firstRawSample === null) {
-          firstRawSample = r.value;
-          // Surface the raw shape on every check so we can diagnose
-          // "API returns 200 OK but our parser finds 0 slots" cases.
-          try {
-            console.log(
-              `kort40 raw ${d}:`,
-              JSON.stringify(r.value).slice(0, 2000),
-            );
-          } catch (_) {
-            console.log(`kort40 raw ${d}: <unserializable>`);
-          }
+        if (firstRawSample === null) firstRawSample = r.value;
+        // Surface the raw shape for EVERY date so we can diagnose
+        // "API returns 200 OK but our parser finds 0 slots" or
+        // timezone-shift mismatches.
+        try {
+          console.log(
+            `kort40 raw ${d}:`,
+            JSON.stringify(r.value).slice(0, 2000),
+          );
+        } catch (_) {
+          console.log(`kort40 raw ${d}: <unserializable>`);
         }
         // Capture per-date "blocked" message from kort40 (e.g. season not opened).
         if (
