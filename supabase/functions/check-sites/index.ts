@@ -379,6 +379,15 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
       Array.isArray(root.reserved) ||
       Array.isArray(root.hot_available);
     if (hasHourArrays) {
+      // kort40 enforces "one game per day" per user: if the current user
+      // already has a reservation on this date, NO other hour is bookable
+      // by them — even if the API still lists them in available_hours.
+      const userBooked = Array.isArray(root.reserved_hours_by_current_user)
+        ? (root.reserved_hours_by_current_user as unknown[])
+            .map((h) => (typeof h === 'number' ? h : Number(h)))
+            .filter((h) => Number.isFinite(h))
+        : [];
+      const dayLockedByUser = userBooked.length > 0;
       const pushHours = (arr: unknown, classification: SlotClassification, reason: string) => {
         if (!Array.isArray(arr)) return;
         for (const h of arr) {
@@ -386,14 +395,26 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
           if (!Number.isFinite(hour)) continue;
           const start = `${String(hour).padStart(2, '0')}:00`;
           const end = `${String((hour + 1) % 24).padStart(2, '0')}:00`;
+          let finalClassification = classification;
+          let finalReason = reason;
+          if (dayLockedByUser && classification === 'available') {
+            // User already has a booking on this date → cannot book any other hour
+            if (userBooked.includes(hour)) {
+              finalClassification = 'not_bookable';
+              finalReason = 'your_booking';
+            } else {
+              finalClassification = 'not_bookable';
+              finalReason = `one_game_per_day (you booked ${userBooked.join(',')}:00)`;
+            }
+          }
           out.push({
             key: `${date}|kort40|${start}`,
             date,
             startTime: start,
             endTime: end,
             court: 'kort40',
-            classification,
-            reason,
+            classification: finalClassification,
+            reason: finalReason,
             raw: { hour, source: reason },
           });
         }
