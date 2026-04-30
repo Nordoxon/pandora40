@@ -349,15 +349,69 @@ function formatDateRu(date: string): string {
   return `${d.getDate()} ${months[d.getMonth()]} (${days[d.getDay()]})`;
 }
 
+const CLOSED_BACKOFF_MS = 10 * 60 * 1000; // 10 минут когда сайт закрыт
+const OPEN_INTERVAL_MS = 60 * 1000;        // 1 минута когда сайт работает
+
+function buildSlotsList(slots: NormalizedSlot[], header: string): string {
+  const byDate = new Map<string, NormalizedSlot[]>();
+  for (const s of slots) {
+    if (!byDate.has(s.date)) byDate.set(s.date, []);
+    byDate.get(s.date)!.push(s);
+  }
+  const lines: string[] = [header];
+  const dateKeys = [...byDate.keys()].sort();
+  for (const d of dateKeys.slice(0, 10)) {
+    lines.push(`\n📅 <b>${formatDateRu(d)}</b>`);
+    const dayList = byDate.get(d)!.sort((a, b) => a.startTime.localeCompare(b.startTime));
+    for (const s of dayList.slice(0, 12)) {
+      const time = s.endTime ? `${s.startTime}–${s.endTime}` : s.startTime;
+      lines.push(`• ${time} · ${s.court}`);
+    }
+    if (dayList.length > 12) lines.push(`• …и ещё ${dayList.length - 12}`);
+  }
+  if (dateKeys.length > 10) lines.push(`\n…и ещё ${dateKeys.length - 10} дней`);
+  lines.push(`\n<a href="${KORT40_BASE}/">Открыть kort40.online</a>`);
+  return lines.join('\n');
+}
+
+async function markSeasonClosed(supabase: any, site: any, reason: string) {
+  const wasOpen = site.season_status === 'open';
+  const nextCheck = new Date(Date.now() + CLOSED_BACKOFF_MS).toISOString();
+  await supabase
+    .from('watched_sites')
+    .update({
+      last_checked_at: new Date().toISOString(),
+      last_status: `closed: ${reason.slice(0, 120)}`,
+      season_status: 'closed',
+      consecutive_errors: 0, // closed ≠ error
+      next_check_at: nextCheck,
+    })
+    .eq('id', site.id);
+
+  if (wasOpen) {
+    await supabase.from('change_history').insert({
+      site_id: site.id,
+      event_type: 'season_close',
+      message: `Бронирование закрыто. Опрос — раз в 10 минут.`,
+    });
+  }
+}
+
 async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
-  const email = Deno.env.get('KORT40_EMAIL');
-  const password = Deno.env.get('KORT40_PASSWORD');
-  if (!email || !password) {
-    throw new Error('KORT40_EMAIL / KORT40_PASSWORD не настроены в секретах');
+  // 1) Get session
+  const login = await getKort40Session(supabase, site);
+  if (login.status === 'closed') {
+    await markSeasonClosed(supabase, site, login.reason);
+    return { status: 'closed' as const, reason: login.reason };
+  }
+  if (login.status === 'error') {
+    throw new Error(login.reason);
   }
 
-  const jar = await kort40Login(email, password);
+  let jar = login.jar;
+  let didReLogin = login.freshLogin;
 
+  // 2) Probe today's date first
   const dates: string[] = [];
   const today = new Date();
   for (let i = 0; i < daysAhead; i++) {
@@ -365,27 +419,77 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     dates.push(d.toISOString().slice(0, 10));
   }
 
-  // Fetch in parallel batches of 8 to stay polite
   const allSlots: NormalizedSlot[] = [];
   const errors: string[] = [];
   let firstRawSample: unknown = null;
+  let closedSignals = 0;
+  let okResponses = 0;
 
-  const batchSize = 8;
-  for (let i = 0; i < dates.length; i += batchSize) {
-    const batch = dates.slice(i, i + batchSize);
-    const results = await Promise.allSettled(batch.map((d) => kort40FetchSlots(jar, d)));
-    results.forEach((r, idx) => {
-      const d = batch[idx];
+  // Smaller batch + tiny delay → friendlier to the server
+  const batchSize = 3;
+
+  async function runBatch(batchDates: string[]) {
+    const results = await Promise.allSettled(batchDates.map((d) => kort40FetchSlots(jar, d)));
+    for (let idx = 0; idx < results.length; idx++) {
+      const r = results[idx];
+      const d = batchDates[idx];
       if (r.status === 'fulfilled') {
+        okResponses++;
         if (firstRawSample === null) firstRawSample = r.value;
         allSlots.push(...extractAvailableSlots(r.value, d));
       } else {
-        errors.push(`${d}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+        const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+        if (msg === 'CLOSED_HTML' || msg.startsWith('CLOSED_')) closedSignals++;
+        else if (msg.startsWith('AUTH_')) errors.push(`${d}: ${msg}`);
+        else errors.push(`${d}: ${msg}`);
       }
-    });
+    }
   }
 
-  // Compare with previous state
+  for (let i = 0; i < dates.length; i += batchSize) {
+    const batch = dates.slice(i, i + batchSize);
+    await runBatch(batch);
+
+    // If first batch returns AUTH errors → re-login once and retry
+    if (i === 0 && !didReLogin && errors.some((e) => e.includes('AUTH_'))) {
+      await supabase.from('kort_session').delete().eq('site_id', site.id);
+      const fresh = await kort40FreshLogin(
+        Deno.env.get('KORT40_EMAIL')!,
+        Deno.env.get('KORT40_PASSWORD')!,
+      );
+      if (fresh.status === 'ok') {
+        jar = fresh.jar;
+        didReLogin = true;
+        await supabase.from('kort_session').upsert(
+          {
+            site_id: site.id,
+            csrftoken: fresh.jar.csrftoken,
+            sessionid: fresh.jar.sessionid,
+            expires_at: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+          },
+          { onConflict: 'site_id' },
+        );
+        errors.length = 0;
+        await runBatch(batch); // retry
+      } else if (fresh.status === 'closed') {
+        await markSeasonClosed(supabase, site, fresh.reason);
+        return { status: 'closed' as const, reason: fresh.reason };
+      } else {
+        throw new Error(fresh.reason);
+      }
+    }
+
+    // tiny delay between batches
+    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 200));
+  }
+
+  // 3) If majority of probes say "closed", treat the whole site as closed
+  if (okResponses === 0 && closedSignals > 0) {
+    await markSeasonClosed(supabase, site, `${closedSignals} dates returned non-JSON / 404`);
+    return { status: 'closed' as const, reason: 'API returns no JSON' };
+  }
+
+  // 4) Site is OPEN — diff slots vs previous snapshot
   const { data: prevSlots, error: prevErr } = await supabase
     .from('kort_slots')
     .select('slot_key')
@@ -394,12 +498,12 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
 
   const prevKeys = new Set((prevSlots ?? []).map((s: any) => s.slot_key));
   const currentKeys = new Set(allSlots.map((s) => s.key));
-
-  const isFirstRun = prevKeys.size === 0;
+  const isFirstSnapshot = prevKeys.size === 0;
   const newSlots = allSlots.filter((s) => !prevKeys.has(s.key));
   const goneKeys = [...prevKeys].filter((k) => !currentKeys.has(k));
+  const seasonJustOpened = site.season_status !== 'open';
 
-  // Replace stored state with current snapshot
+  // Replace stored snapshot
   await supabase.from('kort_slots').delete().eq('site_id', site.id);
   if (allSlots.length > 0) {
     const rows = allSlots.map((s) => ({
@@ -411,7 +515,6 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       court_name: s.court,
       raw: s.raw as any,
     }));
-    // Insert in chunks of 500
     for (let i = 0; i < rows.length; i += 500) {
       await supabase.from('kort_slots').insert(rows.slice(i, i + 500));
     }
@@ -423,55 +526,59 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       last_checked_at: new Date().toISOString(),
       last_status: errors.length > 0 ? `partial: ${errors.length} errors` : 'ok',
       current_hash: `slots:${allSlots.length}`,
+      season_status: 'open',
+      consecutive_errors: 0,
+      next_check_at: new Date(Date.now() + OPEN_INTERVAL_MS).toISOString(),
     })
     .eq('id', site.id);
 
-  if (isFirstRun) {
+  // 5) Notifications
+  if (seasonJustOpened) {
+    // Season just transitioned closed/unknown → open
+    const header = `🎾 <b>Бронирование на kort40.online открыто!</b>\nСвободно ${allSlots.length} слотов на ближайшие ${daysAhead} дн.`;
+    const text = allSlots.length > 0 ? buildSlotsList(allSlots, header) : `${header}\n\n<a href="${KORT40_BASE}/">Открыть kort40.online</a>`;
+
+    await supabase.from('change_history').insert({
+      site_id: site.id,
+      event_type: 'season_open',
+      message: `Сезон открыт: ${allSlots.length} свободных слотов на ${daysAhead} дн.`,
+    });
+    try {
+      await sendTelegram(site.telegram_chat_id, text);
+    } catch (tgErr) {
+      await supabase.from('change_history').insert({
+        site_id: site.id,
+        event_type: 'error',
+        message: `Telegram: ${tgErr instanceof Error ? tgErr.message : String(tgErr)}`,
+      });
+    }
+    console.log('kort40 first-open sample:', JSON.stringify(firstRawSample).slice(0, 1500));
+    return { status: 'season_open' as const, found: allSlots.length };
+  }
+
+  if (isFirstSnapshot) {
     await supabase.from('change_history').insert({
       site_id: site.id,
       event_type: 'baseline',
       message: `Сохранено начальное состояние: ${allSlots.length} свободных слотов на ${daysAhead} дн.`,
     });
-    // Diagnostics: log a sample so we can adjust parser if shape differs
-    console.log('kort40 first-run sample (truncated):', JSON.stringify(firstRawSample).slice(0, 2000));
-    return { changed: false, found: allSlots.length, errors };
+    return { status: 'baseline' as const, found: allSlots.length };
   }
 
   if (newSlots.length > 0) {
-    // Group by date for nicer message
-    const byDate = new Map<string, NormalizedSlot[]>();
-    for (const s of newSlots) {
-      if (!byDate.has(s.date)) byDate.set(s.date, []);
-      byDate.get(s.date)!.push(s);
-    }
-
-    const lines: string[] = ['🎾 <b>Освободились корты на kort40.online</b>'];
-    const dateKeys = [...byDate.keys()].sort();
-    for (const d of dateKeys) {
-      lines.push(`\n📅 <b>${formatDateRu(d)}</b>`);
-      const slots = byDate.get(d)!.sort((a, b) => a.startTime.localeCompare(b.startTime));
-      for (const s of slots.slice(0, 12)) {
-        const time = s.endTime ? `${s.startTime}–${s.endTime}` : s.startTime;
-        lines.push(`• ${time} · ${s.court}`);
-      }
-      if (slots.length > 12) lines.push(`• …и ещё ${slots.length - 12}`);
-    }
-    lines.push(`\n<a href="${KORT40_BASE}/">Открыть kort40.online</a>`);
-
+    const text = buildSlotsList(newSlots, '🎾 <b>Освободились корты на kort40.online</b>');
     await supabase.from('change_history').insert({
       site_id: site.id,
       event_type: 'change',
       message: `Появилось ${newSlots.length} новых свободных слотов`,
     });
-
     try {
-      await sendTelegram(site.telegram_chat_id, lines.join('\n'));
+      await sendTelegram(site.telegram_chat_id, text);
     } catch (tgErr) {
-      const msg = tgErr instanceof Error ? tgErr.message : String(tgErr);
       await supabase.from('change_history').insert({
         site_id: site.id,
         event_type: 'error',
-        message: `Telegram: ${msg}`,
+        message: `Telegram: ${tgErr instanceof Error ? tgErr.message : String(tgErr)}`,
       });
     }
   }
@@ -484,7 +591,13 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     });
   }
 
-  return { changed: newSlots.length > 0, found: allSlots.length, new: newSlots.length, gone: goneKeys.length, errors };
+  return {
+    status: 'open' as const,
+    found: allSlots.length,
+    new: newSlots.length,
+    gone: goneKeys.length,
+    errors,
+  };
 }
 
 Deno.serve(async (req) => {
