@@ -559,6 +559,7 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   }
 
   const allSlots: NormalizedSlot[] = [];
+  const allClassified: ClassifiedSlot[] = [];
   const errors: string[] = [];
   let firstRawSample: unknown = null;
   let closedSignals = 0;
@@ -575,7 +576,20 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       if (r.status === 'fulfilled') {
         okResponses++;
         if (firstRawSample === null) firstRawSample = r.value;
-        allSlots.push(...extractAvailableSlots(r.value, d));
+        const classified = extractClassifiedSlots(r.value, d);
+        allClassified.push(...classified);
+        for (const c of classified) {
+          if (c.classification === 'available') {
+            allSlots.push({
+              key: c.key,
+              date: c.date,
+              startTime: c.startTime,
+              endTime: c.endTime,
+              court: c.court,
+              raw: c.raw,
+            });
+          }
+        }
       } else {
         const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
         if (msg === 'CLOSED_HTML' || msg.startsWith('CLOSED_')) closedSignals++;
@@ -627,6 +641,44 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     await markSeasonClosed(supabase, site, `${closedSignals} dates returned non-JSON / 404`);
     return { status: 'closed' as const, reason: 'API returns no JSON' };
   }
+
+  // 3a) Replace audit snapshot — useful for diagnosing "visible but not bookable" slots
+  const auditCounts: Record<SlotClassification, number> = {
+    available: 0,
+    busy: 0,
+    not_bookable: 0,
+    locked: 0,
+    limit_reached: 0,
+    unknown: 0,
+  };
+  for (const c of allClassified) auditCounts[c.classification]++;
+
+  await supabase.from('kort_slot_audit').delete().eq('site_id', site.id);
+  if (allClassified.length > 0) {
+    const auditRows = allClassified.map((c) => ({
+      site_id: site.id,
+      slot_key: c.key,
+      slot_date: c.date,
+      start_time: c.startTime,
+      end_time: c.endTime,
+      court_name: c.court,
+      classification: c.classification,
+      reason: c.reason,
+      raw: c.raw as any,
+    }));
+    for (let i = 0; i < auditRows.length; i += 500) {
+      const { error: auditErr } = await supabase
+        .from('kort_slot_audit')
+        .insert(auditRows.slice(i, i + 500));
+      if (auditErr) console.error('kort_slot_audit insert error:', auditErr.message);
+    }
+  }
+  console.log(
+    `kort40 audit ${site.id}: free=${auditCounts.available} busy=${auditCounts.busy} ` +
+      `not_bookable=${auditCounts.not_bookable} locked=${auditCounts.locked} ` +
+      `limit_reached=${auditCounts.limit_reached} unknown=${auditCounts.unknown} ` +
+      `total=${allClassified.length}`,
+  );
 
   // 4) Site is OPEN — diff slots vs previous snapshot
   const { data: prevSlots, error: prevErr } = await supabase
@@ -722,7 +774,11 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     .from('watched_sites')
     .update({
       last_checked_at: new Date().toISOString(),
-      last_status: errors.length > 0 ? `partial: ${errors.length} errors` : 'ok',
+      last_status:
+        (errors.length > 0 ? `partial: ${errors.length} errors • ` : 'ok • ') +
+        `free=${auditCounts.available} busy=${auditCounts.busy} ` +
+        `nb=${auditCounts.not_bookable} lock=${auditCounts.locked} ` +
+        `lim=${auditCounts.limit_reached} un=${auditCounts.unknown}`,
       current_hash: `slots:${allSlots.length}`,
       season_status: 'open',
       consecutive_errors: 0,
