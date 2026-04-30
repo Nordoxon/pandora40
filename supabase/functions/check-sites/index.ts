@@ -634,14 +634,29 @@ Deno.serve(async (req) => {
   const results: Array<{ id: string; status: string; changed: boolean; message?: string }> = [];
 
   for (const site of sites ?? []) {
+    // Respect backoff window unless this is a manual "check now"
+    if (
+      !onlySiteId &&
+      site.next_check_at &&
+      new Date(site.next_check_at).getTime() > Date.now()
+    ) {
+      results.push({
+        id: site.id,
+        status: 'skipped',
+        changed: false,
+        message: `next_check_at=${site.next_check_at}`,
+      });
+      continue;
+    }
+
     try {
       if (site.monitor_type === 'kort40') {
         const r = await processKort40Site(supabase, site, 30);
         results.push({
           id: site.id,
-          status: r.changed ? 'changed' : 'unchanged',
-          changed: r.changed,
-          message: `kort40: found=${r.found} new=${r.new ?? 0} errors=${r.errors.length}`,
+          status: r.status,
+          changed: r.status === 'season_open' || ('new' in r && (r as any).new > 0),
+          message: `kort40: ${r.status} ${'found' in r ? `found=${(r as any).found}` : ''}`,
         });
         continue;
       }
@@ -697,9 +712,17 @@ Deno.serve(async (req) => {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const nextErrors = (site.consecutive_errors ?? 0) + 1;
+      // After 3 consecutive errors, back off to 10 minutes
+      const backoff = nextErrors >= 3 ? CLOSED_BACKOFF_MS : OPEN_INTERVAL_MS;
       await supabase
         .from('watched_sites')
-        .update({ last_checked_at: new Date().toISOString(), last_status: `error: ${msg}` })
+        .update({
+          last_checked_at: new Date().toISOString(),
+          last_status: `error: ${msg.slice(0, 200)}`,
+          consecutive_errors: nextErrors,
+          next_check_at: new Date(Date.now() + backoff).toISOString(),
+        })
         .eq('id', site.id);
       await supabase.from('change_history').insert({
         site_id: site.id,
