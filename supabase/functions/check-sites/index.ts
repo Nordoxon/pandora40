@@ -320,6 +320,7 @@ type SlotClassification =
   | 'not_bookable'
   | 'locked'
   | 'limit_reached'
+  | 'season_blocked'
   | 'unknown';
 
 interface ClassifiedSlot {
@@ -564,6 +565,7 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   let firstRawSample: unknown = null;
   let closedSignals = 0;
   let okResponses = 0;
+  let detailMessage: string | null = null;
 
   // Smaller batch + tiny delay → friendlier to the server
   const batchSize = 3;
@@ -587,6 +589,15 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
           } catch (_) {
             console.log(`kort40 raw ${d}: <unserializable>`);
           }
+        }
+        // Capture per-date "blocked" message from kort40 (e.g. season not opened).
+        if (
+          detailMessage === null &&
+          r.value &&
+          typeof r.value === 'object' &&
+          typeof (r.value as any).detail === 'string'
+        ) {
+          detailMessage = (r.value as any).detail as string;
         }
         const classified = extractClassifiedSlots(r.value, d);
         allClassified.push(...classified);
@@ -661,9 +672,29 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     not_bookable: 0,
     locked: 0,
     limit_reached: 0,
+    season_blocked: 0,
     unknown: 0,
   };
   for (const c of allClassified) auditCounts[c.classification]++;
+
+  // If kort40 explicitly told us "booking unavailable" but the API still
+  // returns 200 with an empty list, surface that as season_blocked rows
+  // (one synthetic row per date) so the dashboard can show the reason.
+  if (allClassified.length === 0 && detailMessage) {
+    for (const d of dates) {
+      allClassified.push({
+        key: `${d}|__season_blocked__`,
+        date: d,
+        startTime: '',
+        endTime: '',
+        court: '—',
+        classification: 'season_blocked',
+        reason: detailMessage.slice(0, 250),
+        raw: { detail: detailMessage },
+      });
+      auditCounts.season_blocked++;
+    }
+  }
 
   await supabase.from('kort_slot_audit').delete().eq('site_id', site.id);
   if (allClassified.length > 0) {
@@ -790,7 +821,9 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
         (errors.length > 0 ? `partial: ${errors.length} errors • ` : 'ok • ') +
         `free=${auditCounts.available} busy=${auditCounts.busy} ` +
         `nb=${auditCounts.not_bookable} lock=${auditCounts.locked} ` +
-        `lim=${auditCounts.limit_reached} un=${auditCounts.unknown}`,
+        `lim=${auditCounts.limit_reached} blk=${auditCounts.season_blocked} ` +
+        `un=${auditCounts.unknown}` +
+        (detailMessage ? ` • detail: ${detailMessage.slice(0, 100)}` : ''),
       current_hash: `slots:${allSlots.length}`,
       season_status: 'open',
       consecutive_errors: 0,
