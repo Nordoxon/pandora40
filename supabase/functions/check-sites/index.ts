@@ -379,6 +379,15 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
       Array.isArray(root.reserved) ||
       Array.isArray(root.hot_available);
     if (hasHourArrays) {
+      // kort40 enforces "one game per day" per user: if the current user
+      // already has a reservation on this date, NO other hour is bookable
+      // by them — even if the API still lists them in available_hours.
+      const userBooked = Array.isArray(root.reserved_hours_by_current_user)
+        ? (root.reserved_hours_by_current_user as unknown[])
+            .map((h) => (typeof h === 'number' ? h : Number(h)))
+            .filter((h) => Number.isFinite(h))
+        : [];
+      const dayLockedByUser = userBooked.length > 0;
       const pushHours = (arr: unknown, classification: SlotClassification, reason: string) => {
         if (!Array.isArray(arr)) return;
         for (const h of arr) {
@@ -386,14 +395,26 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
           if (!Number.isFinite(hour)) continue;
           const start = `${String(hour).padStart(2, '0')}:00`;
           const end = `${String((hour + 1) % 24).padStart(2, '0')}:00`;
+          let finalClassification = classification;
+          let finalReason = reason;
+          if (dayLockedByUser && classification === 'available') {
+            // User already has a booking on this date → cannot book any other hour
+            if (userBooked.includes(hour)) {
+              finalClassification = 'not_bookable';
+              finalReason = 'your_booking';
+            } else {
+              finalClassification = 'not_bookable';
+              finalReason = `one_game_per_day (you booked ${userBooked.join(',')}:00)`;
+            }
+          }
           out.push({
             key: `${date}|kort40|${start}`,
             date,
             startTime: start,
             endTime: end,
             court: 'kort40',
-            classification,
-            reason,
+            classification: finalClassification,
+            reason: finalReason,
             raw: { hour, source: reason },
           });
         }
@@ -1003,7 +1024,9 @@ Deno.serve(async (req) => {
     const profile = await kort40FetchProfile(login.jar).catch((e) => ({ error: String(e) }));
     const today = new Date();
     const probeDates: string[] = [];
-    for (let i = 0; i < 7; i++) {
+    const horizonParam = Number(url.searchParams.get('days') ?? '30');
+    const horizon = Number.isFinite(horizonParam) ? Math.max(1, Math.min(30, horizonParam)) : 30;
+    for (let i = 0; i < horizon; i++) {
       probeDates.push(new Date(today.getTime() + i * 86400000).toISOString().slice(0, 10));
     }
     const slots: Record<string, unknown> = {};
@@ -1014,8 +1037,16 @@ Deno.serve(async (req) => {
         slots[d] = { error: e instanceof Error ? e.message : String(e) };
       }
     }
+    // Compact view: dates where current user already has a reservation
+    const userBookings: Record<string, number[]> = {};
+    for (const [d, raw] of Object.entries(slots)) {
+      const r = raw as { reserved_hours_by_current_user?: unknown };
+      if (Array.isArray(r?.reserved_hours_by_current_user) && r.reserved_hours_by_current_user.length > 0) {
+        userBookings[d] = r.reserved_hours_by_current_user as number[];
+      }
+    }
     return new Response(
-      JSON.stringify({ profile, slots }, null, 2),
+      JSON.stringify({ profile, userBookings, slots }, null, 2),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   }
