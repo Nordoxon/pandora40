@@ -138,6 +138,24 @@ function jarToHeader(jar: CookieJar): string {
 const KORT40_BASE = 'https://kort40.online';
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
+const KORT40_TIMEZONE_OFFSET_HOURS = 3;
+const KORT40_DAY_START_HOUR = 6;
+const KORT40_DAY_END_HOUR = 23;
+
+function shiftKort40Hour(hour: number): number {
+  return (hour + KORT40_TIMEZONE_OFFSET_HOURS + 24) % 24;
+}
+
+function isKort40VisibleHour(hour: number): boolean {
+  return hour >= KORT40_DAY_START_HOUR && hour <= KORT40_DAY_END_HOUR;
+}
+
+function formatHourRange(hour: number): { start: string; end: string } {
+  return {
+    start: `${String(hour).padStart(2, '0')}:00`,
+    end: `${String((hour + 1) % 24).padStart(2, '0')}:00`,
+  };
+}
 
 /**
  * Result of attempting to obtain a kort40 session.
@@ -370,46 +388,91 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
   const out: ClassifiedSlot[] = [];
   const seen = new WeakSet<object>();
 
-  // kort40 actual format: { available_hours: [18,19,20], reserved: [6,7], hot_available: [13], detail?: "..." }
+  // kort40 portal UI does NOT trust available_hours directly.
+  // It renders the visible 06:00–23:00 ring by taking `reserved`
+  // (shifted to local time), `reserved_hours_by_current_user`, `hot_available`
+  // and treating every remaining visible hour as available.
   // Handle this top-level shape directly before generic walk.
   if (data && typeof data === 'object' && !Array.isArray(data)) {
     const root = data as Record<string, unknown>;
     const hasHourArrays =
       Array.isArray(root.available_hours) ||
       Array.isArray(root.reserved) ||
-      Array.isArray(root.hot_available);
+      Array.isArray(root.hot_available) ||
+      Array.isArray(root.reserved_hours_by_current_user);
     if (hasHourArrays) {
-      // Note: kort40 enforces "one game per day" per user, so available_hours
-      // on dates where the current user already has a booking are not bookable
-      // by THIS account. We still surface them as available — they're objectively
-      // free slots that anyone else can take, which is the point of the monitor.
-      const pushHours = (arr: unknown, classification: SlotClassification, reason: string) => {
-        if (!Array.isArray(arr)) return;
-        for (const h of arr) {
-          const hour = typeof h === 'number' ? h : Number(h);
-          if (!Number.isFinite(hour)) continue;
-          const start = `${String(hour).padStart(2, '0')}:00`;
-          const end = `${String((hour + 1) % 24).padStart(2, '0')}:00`;
-          out.push({
-            key: `${date}|kort40|${start}`,
-            date,
-            startTime: start,
-            endTime: end,
-            court: 'kort40',
-            classification,
-            reason,
-            raw: { hour, source: reason },
-          });
-        }
+      const toNumberArray = (arr: unknown): number[] => {
+        if (!Array.isArray(arr)) return [];
+        return arr
+          .map((h) => (typeof h === 'number' ? h : Number(h)))
+          .filter((h) => Number.isFinite(h));
       };
-      pushHours(root.available_hours, 'available', 'available_hours');
-      pushHours(root.hot_available, 'available', 'hot_available');
-      pushHours(root.reserved, 'busy', 'reserved');
+
+      const reservedShifted = new Set(
+        toNumberArray(root.reserved).map(shiftKort40Hour).filter(isKort40VisibleHour),
+      );
+      const userReservedShifted = new Set(
+        toNumberArray(root.reserved_hours_by_current_user)
+          .map(shiftKort40Hour)
+          .filter(isKort40VisibleHour),
+      );
+      const hotVisible = new Set(toNumberArray(root.hot_available).filter(isKort40VisibleHour));
+      const rawAvailable = new Set(toNumberArray(root.available_hours));
+
+      const now = new Date();
+      const moscowNow = new Date(now.getTime() + KORT40_TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000);
+      const todayMoscow = moscowNow.toISOString().slice(0, 10);
+      const currentHourMoscow = moscowNow.getUTCHours();
+      const isTodayMoscow = date === todayMoscow;
+
+      for (let hour = KORT40_DAY_START_HOUR; hour <= KORT40_DAY_END_HOUR; hour++) {
+        const { start, end } = formatHourRange(hour);
+        let classification: SlotClassification;
+        let reason: string;
+
+        if (userReservedShifted.has(hour)) {
+          classification = 'busy';
+          reason = 'reserved_hours_by_current_user';
+        } else if (hotVisible.has(hour)) {
+          classification = 'available';
+          reason = 'hot_available';
+        } else if (reservedShifted.has(hour)) {
+          classification = 'busy';
+          reason = 'reserved';
+        } else if (isTodayMoscow && hour <= currentHourMoscow) {
+          classification = 'not_bookable';
+          reason = 'past';
+        } else {
+          classification = 'available';
+          reason = rawAvailable.has(hour) ? 'available_hours' : 'derived_from_portal_ui';
+        }
+
+        out.push({
+          key: `${date}|kort40|${start}`,
+          date,
+          startTime: start,
+          endTime: end,
+          court: 'kort40',
+          classification,
+          reason,
+          raw: {
+            hour,
+            source: reason,
+            reserved_shifted: reservedShifted.has(hour),
+            user_reserved_shifted: userReservedShifted.has(hour),
+            hot_available: hotVisible.has(hour),
+          },
+        });
+      }
+
       // If detail is present AND there are zero hours of any kind → season_blocked for this date
       const total =
         (Array.isArray(root.available_hours) ? root.available_hours.length : 0) +
         (Array.isArray(root.reserved) ? root.reserved.length : 0) +
-        (Array.isArray(root.hot_available) ? root.hot_available.length : 0);
+        (Array.isArray(root.hot_available) ? root.hot_available.length : 0) +
+        (Array.isArray(root.reserved_hours_by_current_user)
+          ? root.reserved_hours_by_current_user.length
+          : 0);
       if (total === 0 && typeof root.detail === 'string') {
         out.push({
           key: `${date}|__day_blocked__`,
