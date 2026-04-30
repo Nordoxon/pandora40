@@ -1,1 +1,7 @@
 project_id = "ezozhxkmgrzvdpbthtjx"
+
+[functions.check-sites]
+verify_jwt = false
+
+[functions.telegram-test]
+verify_jwt = false

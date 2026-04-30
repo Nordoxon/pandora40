@@ -14,7 +14,77 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      change_history: {
+        Row: {
+          created_at: string
+          event_type: string
+          id: string
+          message: string | null
+          site_id: string
+        }
+        Insert: {
+          created_at?: string
+          event_type: string
+          id?: string
+          message?: string | null
+          site_id: string
+        }
+        Update: {
+          created_at?: string
+          event_type?: string
+          id?: string
+          message?: string | null
+          site_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "change_history_site_id_fkey"
+            columns: ["site_id"]
+            isOneToOne: false
+            referencedRelation: "watched_sites"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      watched_sites: {
+        Row: {
+          created_at: string
+          current_hash: string | null
+          id: string
+          is_active: boolean
+          label: string | null
+          last_checked_at: string | null
+          last_status: string | null
+          telegram_chat_id: string
+          updated_at: string
+          url: string
+        }
+        Insert: {
+          created_at?: string
+          current_hash?: string | null
+          id?: string
+          is_active?: boolean
+          label?: string | null
+          last_checked_at?: string | null
+          last_status?: string | null
+          telegram_chat_id: string
+          updated_at?: string
+          url: string
+        }
+        Update: {
+          created_at?: string
+          current_hash?: string | null
+          id?: string
+          is_active?: boolean
+          label?: string | null
+          last_checked_at?: string | null
+          last_status?: string | null
+          telegram_chat_id?: string
+          updated_at?: string
+          url?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
