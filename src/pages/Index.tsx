@@ -10,6 +10,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Bell, Send, Activity, Clock, CalendarDays, History, Settings } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { ru } from "date-fns/locale";
 
 const CHAT_ID_KEY = "kort40-watch.default-chat-id";
 
@@ -90,6 +92,11 @@ const Index = () => {
     : null;
   const isError = site?.last_status?.startsWith("error");
   const changesCount = history.filter((h) => h.event_type === "change").length;
+  const seasonClosed = site?.season_status === "closed";
+  const seasonOpen = site?.season_status === "open";
+  const nextCheckLabel = site?.next_check_at
+    ? formatDistanceToNow(new Date(site.next_check_at), { addSuffix: true, locale: ru })
+    : null;
 
   return (
     <div className="relative min-h-screen">
@@ -100,10 +107,20 @@ const Index = () => {
           <div className="inline-flex items-center gap-2 rounded-full border border-clay/40 bg-clay/10 px-3 py-1 text-xs text-clay-foreground/90 font-mono-display w-fit">
             <span
               className={`size-1.5 rounded-full ${
-                site?.is_active ? "bg-primary pulse-dot" : "bg-muted-foreground"
+                !site?.is_active
+                  ? "bg-muted-foreground"
+                  : seasonClosed
+                    ? "bg-warning"
+                    : "bg-primary pulse-dot"
               }`}
             />
-            {site?.is_active ? "мониторинг активен • интервал 60с" : "мониторинг не запущен"}
+            {!site?.is_active
+              ? "мониторинг не запущен"
+              : seasonClosed
+                ? "сезон закрыт • опрос раз в 10 мин"
+                : seasonOpen
+                  ? "мониторинг активен • интервал 60с"
+                  : "ожидание первой проверки…"}
           </div>
           <h1 className="font-mono-display text-4xl md:text-5xl font-semibold tracking-tight">
             <span className="text-primary glow-text">kort40</span>
@@ -124,6 +141,30 @@ const Index = () => {
           </p>
         </header>
 
+        {/* Season-closed banner */}
+        {seasonClosed && site?.is_active && (
+          <div className="mt-6 rounded-lg border border-warning/40 bg-warning/10 p-4">
+            <div className="flex items-start gap-3">
+              <Clock className="size-4 text-warning shrink-0 mt-0.5" />
+              <div className="text-sm">
+                <p className="font-mono-display font-medium text-warning">
+                  Сезон ещё не открыт — бронирование на kort40.online закрыто
+                </p>
+                <p className="mt-1 text-muted-foreground text-xs">
+                  Это нормально: вне сезона API сайта не отдаёт расписание. Мы тихо опрашиваем сайт раз в
+                  10 минут и пришлём в Telegram уведомление в ту же минуту, как бронирование откроется
+                  и появятся первые свободные слоты.
+                </p>
+                {nextCheckLabel && (
+                  <p className="mt-2 text-[11px] text-muted-foreground font-mono-display">
+                    следующая проверка: {nextCheckLabel}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Stats */}
         <section className="mt-8 grid grid-cols-3 gap-3">
           <StatCard
@@ -140,7 +181,17 @@ const Index = () => {
           <StatCard
             icon={<Clock className="size-4" />}
             label="статус"
-            value={isError ? "ошибка" : site?.is_active ? "live" : "—"}
+            value={
+              isError
+                ? "ошибка"
+                : seasonClosed
+                  ? "закрыт"
+                  : seasonOpen
+                    ? "open"
+                    : site?.is_active
+                      ? "live"
+                      : "—"
+            }
             accent={isError ? "destructive" : "default"}
           />
         </section>

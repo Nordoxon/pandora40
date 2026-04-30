@@ -88,45 +88,128 @@ const KORT40_BASE = 'https://kort40.online';
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
 
-async function kort40Login(email: string, password: string): Promise<CookieJar> {
+/**
+ * Result of attempting to obtain a kort40 session.
+ * status:
+ *  - 'ok'      — got a working session
+ *  - 'closed'  — site responded but bookings appear closed (no API / non-JSON / specific 4xx)
+ *  - 'error'   — network/credential failure we should surface
+ */
+type LoginResult =
+  | { status: 'ok'; jar: CookieJar; freshLogin: boolean }
+  | { status: 'closed'; reason: string }
+  | { status: 'error'; reason: string };
+
+async function kort40FreshLogin(email: string, password: string): Promise<LoginResult> {
   const jar: CookieJar = {};
 
-  // Step 1: get csrftoken cookie
-  const r1 = await fetch(`${KORT40_BASE}/`, {
-    headers: { 'User-Agent': UA, Accept: 'text/html' },
-  });
-  await r1.text();
+  // Step 1: warm up to get csrftoken
+  let r1: Response;
+  try {
+    r1 = await fetch(`${KORT40_BASE}/`, {
+      headers: { 'User-Agent': UA, Accept: 'text/html', 'Accept-Language': 'ru,en;q=0.7' },
+    });
+  } catch (e) {
+    return { status: 'error', reason: `network: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  const homeBody = await r1.text();
   parseSetCookie(r1.headers, jar);
 
   if (!jar.csrftoken) {
-    throw new Error('kort40: csrftoken cookie not received');
+    // Some seasonal landing pages drop the API entirely — treat as closed
+    if (/season|сезон|закрыт|closed/i.test(homeBody)) {
+      return { status: 'closed', reason: 'no csrftoken; landing looks like off-season page' };
+    }
+    return { status: 'closed', reason: 'no csrftoken cookie' };
   }
 
-  // Try common login endpoints — kort40 uses Django REST.
   const loginPaths = ['/api/login/', '/api/auth/login/', '/api/sign-in/'];
   let lastErr = '';
   for (const path of loginPaths) {
-    const res = await fetch(`${KORT40_BASE}${path}`, {
-      method: 'POST',
-      headers: {
-        'User-Agent': UA,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Referer: `${KORT40_BASE}/login`,
-        Origin: KORT40_BASE,
-        Cookie: jarToHeader(jar),
-        'X-CSRFToken': jar.csrftoken,
-      },
-      body: JSON.stringify({ email, password }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${KORT40_BASE}${path}`, {
+        method: 'POST',
+        headers: {
+          'User-Agent': UA,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'Accept-Language': 'ru,en;q=0.7',
+          Referer: `${KORT40_BASE}/login`,
+          Origin: KORT40_BASE,
+          Cookie: jarToHeader(jar),
+          'X-CSRFToken': jar.csrftoken,
+        },
+        body: JSON.stringify({ email, password }),
+      });
+    } catch (e) {
+      lastErr = `${path} network: ${e instanceof Error ? e.message : String(e)}`;
+      continue;
+    }
     parseSetCookie(res.headers, jar);
     const body = await res.text();
     if (res.ok && jar.sessionid) {
-      return jar;
+      return { status: 'ok', jar, freshLogin: true };
     }
+    // 404 on every login path → API not deployed for this season
     lastErr = `${path} -> ${res.status} ${body.slice(0, 200)}`;
+    if (res.status === 401 || res.status === 403) {
+      // Wrong credentials — surface immediately
+      return { status: 'error', reason: `auth ${res.status} on ${path}: ${body.slice(0, 200)}` };
+    }
   }
-  throw new Error(`kort40: login failed. ${lastErr}`);
+
+  // None of the login endpoints worked, but we did get csrftoken — treat as closed/seasonal
+  return { status: 'closed', reason: `login endpoints unavailable: ${lastErr}` };
+}
+
+async function getKort40Session(supabase: any, site: any): Promise<LoginResult> {
+  const email = Deno.env.get('KORT40_EMAIL');
+  const password = Deno.env.get('KORT40_PASSWORD');
+  if (!email || !password) {
+    return { status: 'error', reason: 'KORT40_EMAIL / KORT40_PASSWORD не настроены' };
+  }
+
+  // Try to reuse cached session
+  const { data: cached } = await supabase
+    .from('kort_session')
+    .select('csrftoken,sessionid,expires_at')
+    .eq('site_id', site.id)
+    .maybeSingle();
+
+  const stillValid =
+    cached?.sessionid &&
+    cached?.csrftoken &&
+    (!cached.expires_at || new Date(cached.expires_at).getTime() > Date.now() + 30_000);
+
+  if (stillValid) {
+    return {
+      status: 'ok',
+      jar: { csrftoken: cached.csrftoken, sessionid: cached.sessionid },
+      freshLogin: false,
+    };
+  }
+
+  const fresh = await kort40FreshLogin(email, password);
+  if (fresh.status === 'ok') {
+    // Cache for 6 hours
+    const expiresAt = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+    await supabase
+      .from('kort_session')
+      .upsert(
+        {
+          site_id: site.id,
+          csrftoken: fresh.jar.csrftoken,
+          sessionid: fresh.jar.sessionid,
+          expires_at: expiresAt,
+        },
+        { onConflict: 'site_id' },
+      );
+  } else {
+    // Drop any stale cached session
+    await supabase.from('kort_session').delete().eq('site_id', site.id);
+  }
+  return fresh;
 }
 
 async function kort40FetchSlots(jar: CookieJar, date: string): Promise<unknown> {
@@ -144,12 +227,19 @@ async function kort40FetchSlots(jar: CookieJar, date: string): Promise<unknown> 
   );
   const text = await res.text();
   if (!res.ok) {
+    // Mark auth issues so caller can invalidate session
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`AUTH_${res.status}`);
+    }
+    if (res.status === 404 || res.status === 503) {
+      throw new Error(`CLOSED_${res.status}`);
+    }
     throw new Error(`get-available-times ${date} -> ${res.status}: ${text.slice(0, 200)}`);
   }
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(`get-available-times ${date}: not JSON`);
+    throw new Error(`CLOSED_HTML`); // got HTML instead of JSON — typical "season closed"
   }
 }
 
@@ -259,15 +349,69 @@ function formatDateRu(date: string): string {
   return `${d.getDate()} ${months[d.getMonth()]} (${days[d.getDay()]})`;
 }
 
+const CLOSED_BACKOFF_MS = 10 * 60 * 1000; // 10 минут когда сайт закрыт
+const OPEN_INTERVAL_MS = 60 * 1000;        // 1 минута когда сайт работает
+
+function buildSlotsList(slots: NormalizedSlot[], header: string): string {
+  const byDate = new Map<string, NormalizedSlot[]>();
+  for (const s of slots) {
+    if (!byDate.has(s.date)) byDate.set(s.date, []);
+    byDate.get(s.date)!.push(s);
+  }
+  const lines: string[] = [header];
+  const dateKeys = [...byDate.keys()].sort();
+  for (const d of dateKeys.slice(0, 10)) {
+    lines.push(`\n📅 <b>${formatDateRu(d)}</b>`);
+    const dayList = byDate.get(d)!.sort((a, b) => a.startTime.localeCompare(b.startTime));
+    for (const s of dayList.slice(0, 12)) {
+      const time = s.endTime ? `${s.startTime}–${s.endTime}` : s.startTime;
+      lines.push(`• ${time} · ${s.court}`);
+    }
+    if (dayList.length > 12) lines.push(`• …и ещё ${dayList.length - 12}`);
+  }
+  if (dateKeys.length > 10) lines.push(`\n…и ещё ${dateKeys.length - 10} дней`);
+  lines.push(`\n<a href="${KORT40_BASE}/">Открыть kort40.online</a>`);
+  return lines.join('\n');
+}
+
+async function markSeasonClosed(supabase: any, site: any, reason: string) {
+  const wasOpen = site.season_status === 'open';
+  const nextCheck = new Date(Date.now() + CLOSED_BACKOFF_MS).toISOString();
+  await supabase
+    .from('watched_sites')
+    .update({
+      last_checked_at: new Date().toISOString(),
+      last_status: `closed: ${reason.slice(0, 120)}`,
+      season_status: 'closed',
+      consecutive_errors: 0, // closed ≠ error
+      next_check_at: nextCheck,
+    })
+    .eq('id', site.id);
+
+  if (wasOpen) {
+    await supabase.from('change_history').insert({
+      site_id: site.id,
+      event_type: 'season_close',
+      message: `Бронирование закрыто. Опрос — раз в 10 минут.`,
+    });
+  }
+}
+
 async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
-  const email = Deno.env.get('KORT40_EMAIL');
-  const password = Deno.env.get('KORT40_PASSWORD');
-  if (!email || !password) {
-    throw new Error('KORT40_EMAIL / KORT40_PASSWORD не настроены в секретах');
+  // 1) Get session
+  const login = await getKort40Session(supabase, site);
+  if (login.status === 'closed') {
+    await markSeasonClosed(supabase, site, login.reason);
+    return { status: 'closed' as const, reason: login.reason };
+  }
+  if (login.status === 'error') {
+    throw new Error(login.reason);
   }
 
-  const jar = await kort40Login(email, password);
+  let jar = login.jar;
+  let didReLogin = login.freshLogin;
 
+  // 2) Probe today's date first
   const dates: string[] = [];
   const today = new Date();
   for (let i = 0; i < daysAhead; i++) {
@@ -275,27 +419,77 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     dates.push(d.toISOString().slice(0, 10));
   }
 
-  // Fetch in parallel batches of 8 to stay polite
   const allSlots: NormalizedSlot[] = [];
   const errors: string[] = [];
   let firstRawSample: unknown = null;
+  let closedSignals = 0;
+  let okResponses = 0;
 
-  const batchSize = 8;
-  for (let i = 0; i < dates.length; i += batchSize) {
-    const batch = dates.slice(i, i + batchSize);
-    const results = await Promise.allSettled(batch.map((d) => kort40FetchSlots(jar, d)));
-    results.forEach((r, idx) => {
-      const d = batch[idx];
+  // Smaller batch + tiny delay → friendlier to the server
+  const batchSize = 3;
+
+  async function runBatch(batchDates: string[]) {
+    const results = await Promise.allSettled(batchDates.map((d) => kort40FetchSlots(jar, d)));
+    for (let idx = 0; idx < results.length; idx++) {
+      const r = results[idx];
+      const d = batchDates[idx];
       if (r.status === 'fulfilled') {
+        okResponses++;
         if (firstRawSample === null) firstRawSample = r.value;
         allSlots.push(...extractAvailableSlots(r.value, d));
       } else {
-        errors.push(`${d}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+        const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+        if (msg === 'CLOSED_HTML' || msg.startsWith('CLOSED_')) closedSignals++;
+        else if (msg.startsWith('AUTH_')) errors.push(`${d}: ${msg}`);
+        else errors.push(`${d}: ${msg}`);
       }
-    });
+    }
   }
 
-  // Compare with previous state
+  for (let i = 0; i < dates.length; i += batchSize) {
+    const batch = dates.slice(i, i + batchSize);
+    await runBatch(batch);
+
+    // If first batch returns AUTH errors → re-login once and retry
+    if (i === 0 && !didReLogin && errors.some((e) => e.includes('AUTH_'))) {
+      await supabase.from('kort_session').delete().eq('site_id', site.id);
+      const fresh = await kort40FreshLogin(
+        Deno.env.get('KORT40_EMAIL')!,
+        Deno.env.get('KORT40_PASSWORD')!,
+      );
+      if (fresh.status === 'ok') {
+        jar = fresh.jar;
+        didReLogin = true;
+        await supabase.from('kort_session').upsert(
+          {
+            site_id: site.id,
+            csrftoken: fresh.jar.csrftoken,
+            sessionid: fresh.jar.sessionid,
+            expires_at: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+          },
+          { onConflict: 'site_id' },
+        );
+        errors.length = 0;
+        await runBatch(batch); // retry
+      } else if (fresh.status === 'closed') {
+        await markSeasonClosed(supabase, site, fresh.reason);
+        return { status: 'closed' as const, reason: fresh.reason };
+      } else {
+        throw new Error(fresh.reason);
+      }
+    }
+
+    // tiny delay between batches
+    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 200));
+  }
+
+  // 3) If majority of probes say "closed", treat the whole site as closed
+  if (okResponses === 0 && closedSignals > 0) {
+    await markSeasonClosed(supabase, site, `${closedSignals} dates returned non-JSON / 404`);
+    return { status: 'closed' as const, reason: 'API returns no JSON' };
+  }
+
+  // 4) Site is OPEN — diff slots vs previous snapshot
   const { data: prevSlots, error: prevErr } = await supabase
     .from('kort_slots')
     .select('slot_key')
@@ -304,12 +498,12 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
 
   const prevKeys = new Set((prevSlots ?? []).map((s: any) => s.slot_key));
   const currentKeys = new Set(allSlots.map((s) => s.key));
-
-  const isFirstRun = prevKeys.size === 0;
+  const isFirstSnapshot = prevKeys.size === 0;
   const newSlots = allSlots.filter((s) => !prevKeys.has(s.key));
   const goneKeys = [...prevKeys].filter((k) => !currentKeys.has(k));
+  const seasonJustOpened = site.season_status !== 'open';
 
-  // Replace stored state with current snapshot
+  // Replace stored snapshot
   await supabase.from('kort_slots').delete().eq('site_id', site.id);
   if (allSlots.length > 0) {
     const rows = allSlots.map((s) => ({
@@ -321,7 +515,6 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       court_name: s.court,
       raw: s.raw as any,
     }));
-    // Insert in chunks of 500
     for (let i = 0; i < rows.length; i += 500) {
       await supabase.from('kort_slots').insert(rows.slice(i, i + 500));
     }
@@ -333,55 +526,59 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       last_checked_at: new Date().toISOString(),
       last_status: errors.length > 0 ? `partial: ${errors.length} errors` : 'ok',
       current_hash: `slots:${allSlots.length}`,
+      season_status: 'open',
+      consecutive_errors: 0,
+      next_check_at: new Date(Date.now() + OPEN_INTERVAL_MS).toISOString(),
     })
     .eq('id', site.id);
 
-  if (isFirstRun) {
+  // 5) Notifications
+  if (seasonJustOpened) {
+    // Season just transitioned closed/unknown → open
+    const header = `🎾 <b>Бронирование на kort40.online открыто!</b>\nСвободно ${allSlots.length} слотов на ближайшие ${daysAhead} дн.`;
+    const text = allSlots.length > 0 ? buildSlotsList(allSlots, header) : `${header}\n\n<a href="${KORT40_BASE}/">Открыть kort40.online</a>`;
+
+    await supabase.from('change_history').insert({
+      site_id: site.id,
+      event_type: 'season_open',
+      message: `Сезон открыт: ${allSlots.length} свободных слотов на ${daysAhead} дн.`,
+    });
+    try {
+      await sendTelegram(site.telegram_chat_id, text);
+    } catch (tgErr) {
+      await supabase.from('change_history').insert({
+        site_id: site.id,
+        event_type: 'error',
+        message: `Telegram: ${tgErr instanceof Error ? tgErr.message : String(tgErr)}`,
+      });
+    }
+    console.log('kort40 first-open sample:', JSON.stringify(firstRawSample).slice(0, 1500));
+    return { status: 'season_open' as const, found: allSlots.length };
+  }
+
+  if (isFirstSnapshot) {
     await supabase.from('change_history').insert({
       site_id: site.id,
       event_type: 'baseline',
       message: `Сохранено начальное состояние: ${allSlots.length} свободных слотов на ${daysAhead} дн.`,
     });
-    // Diagnostics: log a sample so we can adjust parser if shape differs
-    console.log('kort40 first-run sample (truncated):', JSON.stringify(firstRawSample).slice(0, 2000));
-    return { changed: false, found: allSlots.length, errors };
+    return { status: 'baseline' as const, found: allSlots.length };
   }
 
   if (newSlots.length > 0) {
-    // Group by date for nicer message
-    const byDate = new Map<string, NormalizedSlot[]>();
-    for (const s of newSlots) {
-      if (!byDate.has(s.date)) byDate.set(s.date, []);
-      byDate.get(s.date)!.push(s);
-    }
-
-    const lines: string[] = ['🎾 <b>Освободились корты на kort40.online</b>'];
-    const dateKeys = [...byDate.keys()].sort();
-    for (const d of dateKeys) {
-      lines.push(`\n📅 <b>${formatDateRu(d)}</b>`);
-      const slots = byDate.get(d)!.sort((a, b) => a.startTime.localeCompare(b.startTime));
-      for (const s of slots.slice(0, 12)) {
-        const time = s.endTime ? `${s.startTime}–${s.endTime}` : s.startTime;
-        lines.push(`• ${time} · ${s.court}`);
-      }
-      if (slots.length > 12) lines.push(`• …и ещё ${slots.length - 12}`);
-    }
-    lines.push(`\n<a href="${KORT40_BASE}/">Открыть kort40.online</a>`);
-
+    const text = buildSlotsList(newSlots, '🎾 <b>Освободились корты на kort40.online</b>');
     await supabase.from('change_history').insert({
       site_id: site.id,
       event_type: 'change',
       message: `Появилось ${newSlots.length} новых свободных слотов`,
     });
-
     try {
-      await sendTelegram(site.telegram_chat_id, lines.join('\n'));
+      await sendTelegram(site.telegram_chat_id, text);
     } catch (tgErr) {
-      const msg = tgErr instanceof Error ? tgErr.message : String(tgErr);
       await supabase.from('change_history').insert({
         site_id: site.id,
         event_type: 'error',
-        message: `Telegram: ${msg}`,
+        message: `Telegram: ${tgErr instanceof Error ? tgErr.message : String(tgErr)}`,
       });
     }
   }
@@ -394,7 +591,13 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     });
   }
 
-  return { changed: newSlots.length > 0, found: allSlots.length, new: newSlots.length, gone: goneKeys.length, errors };
+  return {
+    status: 'open' as const,
+    found: allSlots.length,
+    new: newSlots.length,
+    gone: goneKeys.length,
+    errors,
+  };
 }
 
 Deno.serve(async (req) => {
@@ -431,14 +634,29 @@ Deno.serve(async (req) => {
   const results: Array<{ id: string; status: string; changed: boolean; message?: string }> = [];
 
   for (const site of sites ?? []) {
+    // Respect backoff window unless this is a manual "check now"
+    if (
+      !onlySiteId &&
+      site.next_check_at &&
+      new Date(site.next_check_at).getTime() > Date.now()
+    ) {
+      results.push({
+        id: site.id,
+        status: 'skipped',
+        changed: false,
+        message: `next_check_at=${site.next_check_at}`,
+      });
+      continue;
+    }
+
     try {
       if (site.monitor_type === 'kort40') {
         const r = await processKort40Site(supabase, site, 30);
         results.push({
           id: site.id,
-          status: r.changed ? 'changed' : 'unchanged',
-          changed: r.changed,
-          message: `kort40: found=${r.found} new=${r.new ?? 0} errors=${r.errors.length}`,
+          status: r.status,
+          changed: r.status === 'season_open' || ('new' in r && (r as any).new > 0),
+          message: `kort40: ${r.status} ${'found' in r ? `found=${(r as any).found}` : ''}`,
         });
         continue;
       }
@@ -494,9 +712,17 @@ Deno.serve(async (req) => {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const nextErrors = (site.consecutive_errors ?? 0) + 1;
+      // After 3 consecutive errors, back off to 10 minutes
+      const backoff = nextErrors >= 3 ? CLOSED_BACKOFF_MS : OPEN_INTERVAL_MS;
       await supabase
         .from('watched_sites')
-        .update({ last_checked_at: new Date().toISOString(), last_status: `error: ${msg}` })
+        .update({
+          last_checked_at: new Date().toISOString(),
+          last_status: `error: ${msg.slice(0, 200)}`,
+          consecutive_errors: nextErrors,
+          next_check_at: new Date(Date.now() + backoff).toISOString(),
+        })
         .eq('id', site.id);
       await supabase.from('change_history').insert({
         site_id: site.id,

@@ -46,6 +46,33 @@ export type Database = {
           },
         ]
       }
+      kort_session: {
+        Row: {
+          csrftoken: string | null
+          expires_at: string | null
+          id: string
+          sessionid: string | null
+          site_id: string
+          updated_at: string
+        }
+        Insert: {
+          csrftoken?: string | null
+          expires_at?: string | null
+          id?: string
+          sessionid?: string | null
+          site_id: string
+          updated_at?: string
+        }
+        Update: {
+          csrftoken?: string | null
+          expires_at?: string | null
+          id?: string
+          sessionid?: string | null
+          site_id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       kort_slots: {
         Row: {
           court_name: string | null
@@ -92,6 +119,7 @@ export type Database = {
       }
       watched_sites: {
         Row: {
+          consecutive_errors: number
           created_at: string
           current_hash: string | null
           id: string
@@ -100,11 +128,14 @@ export type Database = {
           last_checked_at: string | null
           last_status: string | null
           monitor_type: string
+          next_check_at: string | null
+          season_status: string
           telegram_chat_id: string
           updated_at: string
           url: string
         }
         Insert: {
+          consecutive_errors?: number
           created_at?: string
           current_hash?: string | null
           id?: string
@@ -113,11 +144,14 @@ export type Database = {
           last_checked_at?: string | null
           last_status?: string | null
           monitor_type?: string
+          next_check_at?: string | null
+          season_status?: string
           telegram_chat_id: string
           updated_at?: string
           url: string
         }
         Update: {
+          consecutive_errors?: number
           created_at?: string
           current_hash?: string | null
           id?: string
@@ -126,6 +160,8 @@ export type Database = {
           last_checked_at?: string | null
           last_status?: string | null
           monitor_type?: string
+          next_check_at?: string | null
+          season_status?: string
           telegram_chat_id?: string
           updated_at?: string
           url?: string
