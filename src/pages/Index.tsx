@@ -200,7 +200,6 @@ const Index = () => {
         {/* Tabs: calendar / history / settings */}
         <section className="mt-6 sm:mt-8">
           <Tabs defaultValue="calendar" className="w-full">
-            <TabsList className="grid grid-cols-3 w-full sm:max-w-md bg-card/60 backdrop-blur">
             <TabsList className="grid grid-cols-2 w-full sm:max-w-sm bg-card/60 backdrop-blur">
               <TabsTrigger value="calendar" className="gap-1.5 font-mono-display text-xs">
                 <CalendarDays className="size-3.5" />
