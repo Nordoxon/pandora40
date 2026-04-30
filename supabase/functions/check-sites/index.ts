@@ -370,6 +370,58 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
   const out: ClassifiedSlot[] = [];
   const seen = new WeakSet<object>();
 
+  // kort40 actual format: { available_hours: [18,19,20], reserved: [6,7], hot_available: [13], detail?: "..." }
+  // Handle this top-level shape directly before generic walk.
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const root = data as Record<string, unknown>;
+    const hasHourArrays =
+      Array.isArray(root.available_hours) ||
+      Array.isArray(root.reserved) ||
+      Array.isArray(root.hot_available);
+    if (hasHourArrays) {
+      const pushHours = (arr: unknown, classification: SlotClassification, reason: string) => {
+        if (!Array.isArray(arr)) return;
+        for (const h of arr) {
+          const hour = typeof h === 'number' ? h : Number(h);
+          if (!Number.isFinite(hour)) continue;
+          const start = `${String(hour).padStart(2, '0')}:00`;
+          const end = `${String((hour + 1) % 24).padStart(2, '0')}:00`;
+          out.push({
+            key: `${date}|kort40|${start}`,
+            date,
+            startTime: start,
+            endTime: end,
+            court: 'kort40',
+            classification,
+            reason,
+            raw: { hour, source: reason },
+          });
+        }
+      };
+      pushHours(root.available_hours, 'available', 'available_hours');
+      pushHours(root.hot_available, 'available', 'hot_available');
+      pushHours(root.reserved, 'busy', 'reserved');
+      // If detail is present AND there are zero hours of any kind → season_blocked for this date
+      const total =
+        (Array.isArray(root.available_hours) ? root.available_hours.length : 0) +
+        (Array.isArray(root.reserved) ? root.reserved.length : 0) +
+        (Array.isArray(root.hot_available) ? root.hot_available.length : 0);
+      if (total === 0 && typeof root.detail === 'string') {
+        out.push({
+          key: `${date}|__day_blocked__`,
+          date,
+          startTime: '',
+          endTime: '',
+          court: '—',
+          classification: 'season_blocked',
+          reason: (root.detail as string).slice(0, 250),
+          raw: { detail: root.detail },
+        });
+      }
+      return out;
+    }
+  }
+
   function walk(node: unknown, ctx: { court?: string }) {
     if (!node || typeof node !== 'object') return;
     if (seen.has(node as object)) return;
