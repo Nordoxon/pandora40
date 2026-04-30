@@ -6,21 +6,14 @@ import { SlotsCalendar } from "@/components/SlotsCalendar";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Bell, Send, Activity, Clock, CalendarDays, History, Settings } from "lucide-react";
+import { Bell, Send, Activity, Clock, CalendarDays, History, Settings, Lock } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ru } from "date-fns/locale";
-
-const CHAT_ID_KEY = "kort40-watch.default-chat-id";
 
 const Index = () => {
   const [site, setSite] = useState<KortSite | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [defaultChatId, setDefaultChatId] = useState<string>(
-    () => localStorage.getItem(CHAT_ID_KEY) ?? "",
-  );
   const [testing, setTesting] = useState(false);
 
   useEffect(() => {
@@ -63,23 +56,12 @@ const Index = () => {
     };
   }, []);
 
-  function saveChatId() {
-    localStorage.setItem(CHAT_ID_KEY, defaultChatId.trim());
-    toast.success("chat_id сохранён");
-  }
-
   async function sendTest() {
-    if (!defaultChatId.trim()) {
-      toast.error("Сначала введите chat_id");
-      return;
-    }
     setTesting(true);
     try {
-      const { error } = await supabase.functions.invoke("telegram-test", {
-        body: { chat_id: defaultChatId.trim() },
-      });
+      const { error } = await supabase.functions.invoke("telegram-test", { body: {} });
       if (error) throw error;
-      toast.success("Тестовое сообщение отправлено в Telegram");
+      toast.success("Тестовое сообщение отправлено в общий чат");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Ошибка");
     } finally {
@@ -196,35 +178,23 @@ const Index = () => {
           />
         </section>
 
-        {/* Telegram chat_id helper */}
+        {/* Telegram channel info */}
         <Card className="mt-6 p-5 bg-card/60 backdrop-blur">
-          <div className="flex items-center gap-2 mb-3">
-            <Send className="size-4 text-primary" />
-            <h2 className="font-mono-display font-medium text-sm">Telegram chat_id по умолчанию</h2>
+          <div className="flex items-center gap-2 mb-2">
+            <Lock className="size-4 text-primary" />
+            <h2 className="font-mono-display font-medium text-sm">Общий Telegram-чат</h2>
           </div>
           <p className="text-xs text-muted-foreground mb-4">
-            Этот chat_id будет автоматически подставлен при запуске мониторинга. Узнать chat_id —
-            напишите <code className="text-primary">@userinfobot</code>.
+            Уведомления о свободных слотах автоматически уходят в фиксированный
+            Telegram-чат, заданный серверным секретом{" "}
+            <code className="text-primary">TELEGRAM_CHAT_ID</code>. Никто из посетителей этого
+            сайта не может его подменить. Чтобы пригласить друзей — просто добавьте их в этот
+            чат/группу в Telegram.
           </p>
-          <div className="flex flex-col sm:flex-row gap-3 sm:items-end">
-            <div className="flex-1 space-y-1.5">
-              <Label htmlFor="chat" className="text-xs">chat_id</Label>
-              <Input
-                id="chat"
-                placeholder="123456789"
-                value={defaultChatId}
-                onChange={(e) => setDefaultChatId(e.target.value)}
-                className="font-mono-display"
-              />
-            </div>
-            <div className="flex gap-2">
-              <Button variant="secondary" onClick={saveChatId}>Сохранить</Button>
-              <Button onClick={sendTest} disabled={testing} className="gap-1.5">
-                <Send className="size-3.5" />
-                {testing ? "…" : "Тест"}
-              </Button>
-            </div>
-          </div>
+          <Button onClick={sendTest} disabled={testing} className="gap-1.5" variant="secondary">
+            <Send className="size-3.5" />
+            {testing ? "Отправка…" : "Отправить тестовое сообщение"}
+          </Button>
         </Card>
 
         {/* Tabs: calendar / history / settings */}
@@ -254,7 +224,7 @@ const Index = () => {
             </TabsContent>
 
             <TabsContent value="settings" className="mt-4">
-              <KortConfigCard site={site} defaultChatId={defaultChatId} />
+              <KortConfigCard site={site} />
             </TabsContent>
           </Tabs>
         </section>

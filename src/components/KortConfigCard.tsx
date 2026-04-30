@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { RefreshCw, Send, Trash2, Trophy } from "lucide-react";
+import { RefreshCw, Trash2, Trophy, Lock } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ru } from "date-fns/locale";
 
@@ -27,11 +27,9 @@ export interface KortSite {
 
 interface Props {
   site: KortSite | null;
-  defaultChatId: string;
 }
 
-export function KortConfigCard({ site, defaultChatId }: Props) {
-  const [chatId, setChatId] = useState(site?.telegram_chat_id ?? defaultChatId ?? "");
+export function KortConfigCard({ site }: Props) {
   const [label, setLabel] = useState(site?.label ?? "");
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -43,16 +41,12 @@ export function KortConfigCard({ site, defaultChatId }: Props) {
     : null;
 
   async function startMonitoring() {
-    if (!chatId.trim()) {
-      toast.error("Укажите Telegram chat_id");
-      return;
-    }
     setSaving(true);
     try {
       const { error } = await supabase.from("watched_sites").insert({
         url: "https://kort40.online",
         label: label.trim() || "kort40.online — свободные слоты",
-        telegram_chat_id: chatId.trim(),
+        telegram_chat_id: "server-managed",
         monitor_type: "kort40",
       });
       if (error) throw error;
@@ -71,7 +65,6 @@ export function KortConfigCard({ site, defaultChatId }: Props) {
       const { error } = await supabase
         .from("watched_sites")
         .update({
-          telegram_chat_id: chatId.trim(),
           label: label.trim() || null,
         })
         .eq("id", site.id);
@@ -126,22 +119,18 @@ export function KortConfigCard({ site, defaultChatId }: Props) {
           <h2 className="font-mono-display font-medium">Запустить мониторинг</h2>
         </div>
         <p className="text-xs text-muted-foreground mb-5">
-          Учётные данные kort40 хранятся как секреты на сервере. Здесь укажите только Telegram chat_id —
-          туда будут приходить уведомления о новых освободившихся кортах.
+          Все учётные данные kort40 и Telegram-чат, в который приходят уведомления, хранятся
+          как защищённые серверные секреты. Никто из посетителей сайта не может их изменить.
+          Просто запустите мониторинг — приглашённые в Telegram-чат участники начнут
+          получать оповещения о свободных слотах.
         </p>
         <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="chat" className="text-xs">Telegram chat_id</Label>
-            <Input
-              id="chat"
-              placeholder="123456789"
-              value={chatId}
-              onChange={(e) => setChatId(e.target.value)}
-              className="font-mono-display"
-            />
-            <p className="text-xs text-muted-foreground">
-              Узнать chat_id: напишите боту <code className="text-primary">@userinfobot</code> в Telegram.
-            </p>
+          <div className="flex items-start gap-2 rounded-md border border-clay/30 bg-clay/5 p-3 text-xs text-muted-foreground">
+            <Lock className="size-3.5 text-primary shrink-0 mt-0.5" />
+            <span>
+              Telegram-получатель уже сконфигурирован через секрет{" "}
+              <code className="text-primary">TELEGRAM_CHAT_ID</code>.
+            </span>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="label" className="text-xs">Метка (опционально)</Label>
@@ -235,16 +224,13 @@ export function KortConfigCard({ site, defaultChatId }: Props) {
       </div>
 
       <div className="mt-5 space-y-3 border-t border-border/60 pt-5">
-        <div className="space-y-1.5">
-          <Label htmlFor="chat-edit" className="text-xs flex items-center gap-1.5">
-            <Send className="size-3" /> Telegram chat_id
-          </Label>
-          <Input
-            id="chat-edit"
-            value={chatId}
-            onChange={(e) => setChatId(e.target.value)}
-            className="font-mono-display"
-          />
+        <div className="flex items-start gap-2 rounded-md border border-clay/30 bg-clay/5 p-3 text-xs text-muted-foreground">
+          <Lock className="size-3.5 text-primary shrink-0 mt-0.5" />
+          <span>
+            Уведомления отправляются в Telegram-чат, заданный серверным секретом{" "}
+            <code className="text-primary">TELEGRAM_CHAT_ID</code>. Чтобы пригласить
+            ещё людей — добавьте их в этот чат/группу в Telegram.
+          </span>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="label-edit" className="text-xs">Метка</Label>
