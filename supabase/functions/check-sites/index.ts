@@ -492,18 +492,26 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         if (userReservedShifted.has(hour)) {
           classification = 'busy';
           reason = 'reserved_hours_by_current_user';
-        } else if (hotVisible.has(hour)) {
-          classification = 'available';
-          reason = 'hot_available';
         } else if (reservedShifted.has(hour)) {
           classification = 'busy';
           reason = 'reserved';
         } else if (isTodayMoscow && hour <= currentHourMoscow) {
           classification = 'not_bookable';
           reason = 'past';
-        } else {
+        } else if (rawAvailable.has(hour)) {
+          // Only hours explicitly returned in `available_hours` are bookable.
           classification = 'available';
-          reason = rawAvailable.has(hour) ? 'available_hours' : 'derived_from_portal_ui';
+          reason = 'available_hours';
+        } else if (hotVisible.has(hour)) {
+          // Present in `hot_available` only — this is "Свободная игра" on the
+          // kort40 UI (orange), NOT a free court slot we can book.
+          classification = 'hot_only';
+          reason = 'hot_available_only';
+        } else {
+          // Hour is not in available_hours, not reserved, not past, not hot.
+          // Treat as not bookable (e.g. closed hour / not part of season schedule).
+          classification = 'not_bookable';
+          reason = 'not_in_available_hours';
         }
 
         out.push({
