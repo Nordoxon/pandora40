@@ -17,6 +17,7 @@ export interface Site {
   last_checked_at: string | null;
   last_status: string | null;
   is_active: boolean;
+  monitor_type?: string;
 }
 
 export function SiteCard({ site }: { site: Site }) {
@@ -64,6 +65,8 @@ export function SiteCard({ site }: { site: Site }) {
     host = new URL(site.url).hostname;
   } catch {}
 
+  const isKort = site.monitor_type === "kort40";
+
   return (
     <Card className="p-5 bg-card/60 backdrop-blur border-border/80 hover:border-primary/40 transition-colors">
       <div className="flex items-start justify-between gap-4">
@@ -75,6 +78,11 @@ export function SiteCard({ site }: { site: Site }) {
             <h3 className="font-mono-display text-base font-medium truncate">
               {site.label || host}
             </h3>
+            {isKort && (
+              <span className="text-[10px] font-mono-display uppercase tracking-wider rounded px-1.5 py-0.5 bg-primary/15 text-primary border border-primary/30">
+                slots
+              </span>
+            )}
           </div>
           <a
             href={site.url}
@@ -114,7 +122,11 @@ export function SiteCard({ site }: { site: Site }) {
       </div>
 
       <div className="mt-3 text-xs text-muted-foreground font-mono-display">
-        hash: {site.current_hash ? site.current_hash.slice(0, 16) + "…" : "—"}
+        {isKort
+          ? site.current_hash?.startsWith("slots:")
+            ? `свободно: ${site.current_hash.slice(6)} слотов`
+            : "свободно: —"
+          : `hash: ${site.current_hash ? site.current_hash.slice(0, 16) + "…" : "—"}`}
       </div>
 
       <div className="mt-4 flex gap-2">
