@@ -498,20 +498,19 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         } else if (isTodayMoscow && hour <= currentHourMoscow) {
           classification = 'not_bookable';
           reason = 'past';
-        } else if (rawAvailable.has(hour)) {
-          // Only hours explicitly returned in `available_hours` are bookable.
-          classification = 'available';
-          reason = 'available_hours';
         } else if (hotVisible.has(hour)) {
           // Present in `hot_available` only — this is "Свободная игра" on the
           // kort40 UI (orange), NOT a free court slot we can book.
           classification = 'hot_only';
           reason = 'hot_available_only';
         } else {
-          // Hour is not in available_hours, not reserved, not past, not hot.
-          // Treat as not bookable (e.g. closed hour / not part of season schedule).
-          classification = 'not_bookable';
-          reason = 'not_in_available_hours';
+          // Empirically verified against the kort40 UI: a slot is bookable
+          // (green "Свободно" on the official site) when it is within working
+          // hours and NOT in `reserved` / `user_reserved` / past / hot-only.
+          // The `available_hours` field is the season schedule, not the
+          // realtime free list, so we don't gate on it.
+          classification = 'available';
+          reason = rawAvailable.has(hour) ? 'available_hours' : 'derived_free';
         }
 
         out.push({
@@ -788,18 +787,17 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       const d = batchDates[idx];
       if (r.status === 'fulfilled') {
         okResponses++;
-        if (firstRawSample === null) {
-          firstRawSample = r.value;
-          // Surface the raw shape on every check so we can diagnose
-          // "API returns 200 OK but our parser finds 0 slots" cases.
-          try {
-            console.log(
-              `kort40 raw ${d}:`,
-              JSON.stringify(r.value).slice(0, 2000),
-            );
-          } catch (_) {
-            console.log(`kort40 raw ${d}: <unserializable>`);
-          }
+        if (firstRawSample === null) firstRawSample = r.value;
+        // Surface the raw shape for EVERY date so we can diagnose
+        // "API returns 200 OK but our parser finds 0 slots" or
+        // timezone-shift mismatches.
+        try {
+          console.log(
+            `kort40 raw ${d}:`,
+            JSON.stringify(r.value).slice(0, 2000),
+          );
+        } catch (_) {
+          console.log(`kort40 raw ${d}: <unserializable>`);
         }
         // Capture per-date "blocked" message from kort40 (e.g. season not opened).
         if (
