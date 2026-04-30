@@ -96,7 +96,7 @@ export function KortConfigCard({ site }: Props) {
   // ===== Setup state (no monitor yet) =====
   if (!site) {
     return (
-      <Card className="p-6 bg-card/70 backdrop-blur border-clay/40">
+    <Card className="p-4 sm:p-6 bg-card/70 backdrop-blur border-clay/40">
         <div className="flex items-center gap-2 mb-1">
           <Trophy className="size-4 text-primary" />
           <h2 className="font-mono-display font-medium">Запустить мониторинг</h2>
@@ -135,7 +135,7 @@ export function KortConfigCard({ site }: Props) {
 
   // ===== Active monitor =====
   return (
-    <Card className="p-6 bg-card/70 backdrop-blur border-clay/40">
+    <Card className="p-4 sm:p-6 bg-card/70 backdrop-blur border-clay/40">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -170,11 +170,11 @@ export function KortConfigCard({ site }: Props) {
       </div>
 
       {/* Slot counter — hero number */}
-      <div className="mt-6 court-lines rounded-lg p-6 text-center">
+      <div className="mt-6 court-lines rounded-lg p-4 sm:p-6 text-center">
         <div className="text-[11px] uppercase tracking-widest text-clay-foreground/80 font-mono-display">
           свободных слотов сейчас
         </div>
-        <div className="mt-1 font-mono-display text-6xl font-semibold text-primary glow-text leading-none">
+        <div className="mt-1 font-mono-display text-5xl sm:text-6xl font-semibold text-primary glow-text leading-none">
           {slotsCount ?? "—"}
         </div>
         <div className="mt-2 text-[11px] text-muted-foreground font-mono-display">
