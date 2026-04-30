@@ -156,11 +156,12 @@ async function kort40FreshLogin(email: string, password: string): Promise<LoginR
 
   // Step 1: warm up to get csrftoken.
   // The site is now a React SPA — `/` returns a static HTML shell with no cookies.
-  // The csrftoken cookie is only issued by the Django REST backend on `/api/*` routes.
-  // We hit a lightweight public endpoint (`/api/news/`) just to receive the cookie.
+  // Public endpoints like `/api/news/` don't set csrftoken either; only auth-gated
+  // endpoints do. `/api/profile/` reliably returns 401 + `Set-Cookie: csrftoken=...`,
+  // which is exactly what we need to subsequently call `/api/login/`.
   let r1: Response;
   try {
-    r1 = await fetch(`${KORT40_BASE}/api/news/`, {
+    r1 = await fetch(`${KORT40_BASE}/api/profile/`, {
       headers: {
         'User-Agent': UA,
         Accept: 'application/json',
@@ -171,12 +172,12 @@ async function kort40FreshLogin(email: string, password: string): Promise<LoginR
   } catch (e) {
     return { status: 'error', reason: `network: ${e instanceof Error ? e.message : String(e)}` };
   }
-  // Drain the body so the connection can be reused; we don't actually need it.
+  // 401 is expected here (we're not logged in yet). We only care about the Set-Cookie header.
   await r1.text().catch(() => '');
   parseSetCookie(r1.headers, jar);
 
   if (!jar.csrftoken) {
-    return { status: 'closed', reason: 'no csrftoken cookie from /api/news/' };
+    return { status: 'closed', reason: `no csrftoken cookie from /api/profile/ (status ${r1.status})` };
   }
 
   const loginPaths = ['/api/login/', '/api/auth/login/', '/api/sign-in/'];
