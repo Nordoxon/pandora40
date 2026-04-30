@@ -117,6 +117,51 @@ export type Database = {
           },
         ]
       }
+      kort_slots_seen: {
+        Row: {
+          court_name: string | null
+          created_at: string
+          end_time: string | null
+          first_seen_at: string
+          id: string
+          last_busy_at: string | null
+          last_seen_at: string
+          site_id: string
+          slot_date: string
+          slot_key: string
+          start_time: string | null
+          updated_at: string
+        }
+        Insert: {
+          court_name?: string | null
+          created_at?: string
+          end_time?: string | null
+          first_seen_at?: string
+          id?: string
+          last_busy_at?: string | null
+          last_seen_at?: string
+          site_id: string
+          slot_date: string
+          slot_key: string
+          start_time?: string | null
+          updated_at?: string
+        }
+        Update: {
+          court_name?: string | null
+          created_at?: string
+          end_time?: string | null
+          first_seen_at?: string
+          id?: string
+          last_busy_at?: string | null
+          last_seen_at?: string
+          site_id?: string
+          slot_date?: string
+          slot_key?: string
+          start_time?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       watched_sites: {
         Row: {
           consecutive_errors: number

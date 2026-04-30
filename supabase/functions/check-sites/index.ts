@@ -556,6 +556,31 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   const goneKeys = [...prevKeys].filter((k) => !currentKeys.has(k));
   const seasonJustOpened = site.season_status !== 'open';
 
+  // Load "seen" history to distinguish "slot appeared for the first time"
+  // from "slot was busy and now freed up". We only notify for the latter,
+  // otherwise long-horizon evergreen-free slots would spam the bot.
+  const { data: seenRows, error: seenErr } = await supabase
+    .from('kort_slots_seen')
+    .select('slot_key,last_busy_at')
+    .eq('site_id', site.id);
+  if (seenErr) throw new Error(`db read kort_slots_seen: ${seenErr.message}`);
+
+  const seenMap = new Map<string, { last_busy_at: string | null }>();
+  for (const r of seenRows ?? []) {
+    seenMap.set((r as any).slot_key, { last_busy_at: (r as any).last_busy_at });
+  }
+
+  // A slot is "freshly freed" if:
+  //   - it's currently free (in allSlots),
+  //   - it was NOT free in the previous snapshot (=> a real transition just happened),
+  //   - we've seen this slot key before AND it was marked busy at some point
+  //     (last_busy_at IS NOT NULL).
+  // First-time-ever sightings are silently absorbed into the baseline.
+  const freedSlots = newSlots.filter((s) => {
+    const prior = seenMap.get(s.key);
+    return prior != null && prior.last_busy_at != null;
+  });
+
   // Replace stored snapshot
   await supabase.from('kort_slots').delete().eq('site_id', site.id);
   if (allSlots.length > 0) {
@@ -570,6 +595,40 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     }));
     for (let i = 0; i < rows.length; i += 500) {
       await supabase.from('kort_slots').insert(rows.slice(i, i + 500));
+    }
+  }
+
+  // Update the long-term "seen" log:
+  //  - upsert all currently-free slots → bumps last_seen_at, registers first-time keys
+  //  - mark slots that disappeared from the free list as busy (last_busy_at = now)
+  const nowIso = new Date().toISOString();
+  if (allSlots.length > 0) {
+    const seenRowsToUpsert = allSlots.map((s) => ({
+      site_id: site.id,
+      slot_key: s.key,
+      slot_date: s.date,
+      start_time: s.startTime,
+      end_time: s.endTime,
+      court_name: s.court,
+      last_seen_at: nowIso,
+    }));
+    for (let i = 0; i < seenRowsToUpsert.length; i += 500) {
+      const { error: upErr } = await supabase
+        .from('kort_slots_seen')
+        .upsert(seenRowsToUpsert.slice(i, i + 500), { onConflict: 'site_id,slot_key' });
+      if (upErr) console.error('kort_slots_seen upsert error:', upErr.message);
+    }
+  }
+  if (goneKeys.length > 0) {
+    // Chunk the IN(...) filter to keep request size sane.
+    for (let i = 0; i < goneKeys.length; i += 200) {
+      const chunk = goneKeys.slice(i, i + 200);
+      const { error: busyErr } = await supabase
+        .from('kort_slots_seen')
+        .update({ last_busy_at: nowIso })
+        .eq('site_id', site.id)
+        .in('slot_key', chunk);
+      if (busyErr) console.error('kort_slots_seen mark-busy error:', busyErr.message);
     }
   }
 
@@ -618,12 +677,12 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     return { status: 'baseline' as const, found: allSlots.length };
   }
 
-  if (newSlots.length > 0) {
-    const text = buildSlotsList(newSlots, '🎾 <b>Освободились корты на kort40.online</b>');
+  if (freedSlots.length > 0) {
+    const text = buildSlotsList(freedSlots, '🎾 <b>Освободились корты на kort40.online</b>\n<i>(кто-то отменил бронь)</i>');
     await supabase.from('change_history').insert({
       site_id: site.id,
       event_type: 'change',
-      message: `Появилось ${newSlots.length} новых свободных слотов`,
+      message: `Освободилось ${freedSlots.length} слотов после отмены брони`,
     });
     try {
       await sendTelegram(site.telegram_chat_id, text);
@@ -634,6 +693,13 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
         message: `Telegram: ${tgErr instanceof Error ? tgErr.message : String(tgErr)}`,
       });
     }
+  } else if (newSlots.length > 0) {
+    // First-time sightings — record silently in history, no Telegram spam.
+    await supabase.from('change_history').insert({
+      site_id: site.id,
+      event_type: 'baseline',
+      message: `Зарегистрировано ${newSlots.length} новых свободных слотов (без уведомления — впервые видим)`,
+    });
   }
 
   if (errors.length > 0) {
@@ -648,6 +714,7 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     status: 'open' as const,
     found: allSlots.length,
     new: newSlots.length,
+    freed: freedSlots.length,
     gone: goneKeys.length,
     errors,
   };
