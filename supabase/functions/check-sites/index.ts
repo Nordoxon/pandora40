@@ -314,13 +314,43 @@ interface NormalizedSlot {
   raw: unknown;
 }
 
+type SlotClassification =
+  | 'available'
+  | 'busy'
+  | 'not_bookable'
+  | 'locked'
+  | 'limit_reached'
+  | 'season_blocked'
+  | 'unknown';
+
+interface ClassifiedSlot {
+  key: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  court: string;
+  classification: SlotClassification;
+  reason: string;
+  raw: unknown;
+}
+
 /**
  * Normalize unknown response shapes into a flat list of available slots.
  * Recursively walks the JSON, collects objects that look like slots
  * (have time/court fields) and only keeps available ones.
  */
 function extractAvailableSlots(data: unknown, date: string): NormalizedSlot[] {
-  const out: NormalizedSlot[] = [];
+  return extractClassifiedSlots(data, date)
+    .filter((s) => s.classification === 'available')
+    .map(({ classification: _c, reason: _r, ...rest }) => rest);
+}
+
+/**
+ * Walk the API response and classify EVERY slot-like object we find.
+ * Used to surface why some visually-present slots aren't actually bookable.
+ */
+function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
+  const out: ClassifiedSlot[] = [];
   const seen = new WeakSet<object>();
 
   function walk(node: unknown, ctx: { court?: string }) {
@@ -373,18 +403,64 @@ function extractAvailableSlots(data: unknown, date: string): NormalizedSlot[] {
       ctx.court ??
       '—';
 
-    if (start && (isAvailable || (!isExplicitlyBusy && obj.user_id == null && obj.user == null && obj.client == null))) {
-      // Only count as available if explicitly available OR has no owner/booking.
-      if (isAvailable) {
-        out.push({
-          key: `${date}|${courtName}|${start}|${end ?? ''}`,
-          date,
-          startTime: String(start),
-          endTime: end ? String(end) : '',
-          court: String(courtName),
-          raw: obj,
-        });
+    if (start) {
+      // Heuristic flags for "visible but not bookable" buckets
+      const isLocked =
+        obj.is_locked === true ||
+        obj.locked === true ||
+        obj.is_blocked === true ||
+        obj.blocked === true ||
+        obj.status === 'locked' ||
+        obj.status === 'blocked' ||
+        obj.status === 'closed';
+      const isNotBookable =
+        obj.is_bookable === false ||
+        obj.bookable === false ||
+        obj.can_book === false ||
+        obj.is_available_for_booking === false;
+      const reachedLimit =
+        obj.limit_reached === true ||
+        obj.over_limit === true ||
+        obj.too_many_bookings === true ||
+        (typeof obj.error === 'string' && /limit|превыш/i.test(obj.error as string));
+      const hasOwner =
+        obj.user_id != null || obj.user != null || obj.client != null || obj.client_id != null;
+
+      let classification: SlotClassification;
+      let reason: string;
+      if (isAvailable && !isLocked && !isNotBookable && !reachedLimit) {
+        classification = 'available';
+        reason = 'flag:available';
+      } else if (reachedLimit) {
+        classification = 'limit_reached';
+        reason = 'flag:limit_reached';
+      } else if (isLocked) {
+        classification = 'locked';
+        reason = 'flag:locked/blocked/closed';
+      } else if (isNotBookable) {
+        classification = 'not_bookable';
+        reason = 'flag:bookable=false';
+      } else if (isExplicitlyBusy || hasOwner) {
+        classification = 'busy';
+        reason = hasOwner ? 'has owner/client' : 'flag:busy/booked';
+      } else if (isAvailable === false && !hasOwner) {
+        classification = 'not_bookable';
+        reason = 'available=false, no owner';
+      } else {
+        classification = 'unknown';
+        reason = `keys=${Object.keys(obj).slice(0, 8).join(',')}`;
       }
+
+      out.push({
+        key: `${date}|${courtName}|${start}|${end ?? ''}`,
+        date,
+        startTime: String(start),
+        endTime: end ? String(end) : '',
+        court: String(courtName),
+        classification,
+        reason,
+        raw: obj,
+      });
     }
 
     // Recurse into nested fields
@@ -484,10 +560,12 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   }
 
   const allSlots: NormalizedSlot[] = [];
+  const allClassified: ClassifiedSlot[] = [];
   const errors: string[] = [];
   let firstRawSample: unknown = null;
   let closedSignals = 0;
   let okResponses = 0;
+  let detailMessage: string | null = null;
 
   // Smaller batch + tiny delay → friendlier to the server
   const batchSize = 3;
@@ -499,8 +577,42 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       const d = batchDates[idx];
       if (r.status === 'fulfilled') {
         okResponses++;
-        if (firstRawSample === null) firstRawSample = r.value;
-        allSlots.push(...extractAvailableSlots(r.value, d));
+        if (firstRawSample === null) {
+          firstRawSample = r.value;
+          // Surface the raw shape on every check so we can diagnose
+          // "API returns 200 OK but our parser finds 0 slots" cases.
+          try {
+            console.log(
+              `kort40 raw ${d}:`,
+              JSON.stringify(r.value).slice(0, 2000),
+            );
+          } catch (_) {
+            console.log(`kort40 raw ${d}: <unserializable>`);
+          }
+        }
+        // Capture per-date "blocked" message from kort40 (e.g. season not opened).
+        if (
+          detailMessage === null &&
+          r.value &&
+          typeof r.value === 'object' &&
+          typeof (r.value as any).detail === 'string'
+        ) {
+          detailMessage = (r.value as any).detail as string;
+        }
+        const classified = extractClassifiedSlots(r.value, d);
+        allClassified.push(...classified);
+        for (const c of classified) {
+          if (c.classification === 'available') {
+            allSlots.push({
+              key: c.key,
+              date: c.date,
+              startTime: c.startTime,
+              endTime: c.endTime,
+              court: c.court,
+              raw: c.raw,
+            });
+          }
+        }
       } else {
         const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
         if (msg === 'CLOSED_HTML' || msg.startsWith('CLOSED_')) closedSignals++;
@@ -552,6 +664,64 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     await markSeasonClosed(supabase, site, `${closedSignals} dates returned non-JSON / 404`);
     return { status: 'closed' as const, reason: 'API returns no JSON' };
   }
+
+  // 3a) Replace audit snapshot — useful for diagnosing "visible but not bookable" slots
+  const auditCounts: Record<SlotClassification, number> = {
+    available: 0,
+    busy: 0,
+    not_bookable: 0,
+    locked: 0,
+    limit_reached: 0,
+    season_blocked: 0,
+    unknown: 0,
+  };
+  for (const c of allClassified) auditCounts[c.classification]++;
+
+  // If kort40 explicitly told us "booking unavailable" but the API still
+  // returns 200 with an empty list, surface that as season_blocked rows
+  // (one synthetic row per date) so the dashboard can show the reason.
+  if (allClassified.length === 0 && detailMessage) {
+    for (const d of dates) {
+      allClassified.push({
+        key: `${d}|__season_blocked__`,
+        date: d,
+        startTime: '',
+        endTime: '',
+        court: '—',
+        classification: 'season_blocked',
+        reason: detailMessage.slice(0, 250),
+        raw: { detail: detailMessage },
+      });
+      auditCounts.season_blocked++;
+    }
+  }
+
+  await supabase.from('kort_slot_audit').delete().eq('site_id', site.id);
+  if (allClassified.length > 0) {
+    const auditRows = allClassified.map((c) => ({
+      site_id: site.id,
+      slot_key: c.key,
+      slot_date: c.date,
+      start_time: c.startTime,
+      end_time: c.endTime,
+      court_name: c.court,
+      classification: c.classification,
+      reason: c.reason,
+      raw: c.raw as any,
+    }));
+    for (let i = 0; i < auditRows.length; i += 500) {
+      const { error: auditErr } = await supabase
+        .from('kort_slot_audit')
+        .insert(auditRows.slice(i, i + 500));
+      if (auditErr) console.error('kort_slot_audit insert error:', auditErr.message);
+    }
+  }
+  console.log(
+    `kort40 audit ${site.id}: free=${auditCounts.available} busy=${auditCounts.busy} ` +
+      `not_bookable=${auditCounts.not_bookable} locked=${auditCounts.locked} ` +
+      `limit_reached=${auditCounts.limit_reached} unknown=${auditCounts.unknown} ` +
+      `total=${allClassified.length}`,
+  );
 
   // 4) Site is OPEN — diff slots vs previous snapshot
   const { data: prevSlots, error: prevErr } = await supabase
@@ -647,7 +817,13 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     .from('watched_sites')
     .update({
       last_checked_at: new Date().toISOString(),
-      last_status: errors.length > 0 ? `partial: ${errors.length} errors` : 'ok',
+      last_status:
+        (errors.length > 0 ? `partial: ${errors.length} errors • ` : 'ok • ') +
+        `free=${auditCounts.available} busy=${auditCounts.busy} ` +
+        `nb=${auditCounts.not_bookable} lock=${auditCounts.locked} ` +
+        `lim=${auditCounts.limit_reached} blk=${auditCounts.season_blocked} ` +
+        `un=${auditCounts.unknown}` +
+        (detailMessage ? ` • detail: ${detailMessage.slice(0, 100)}` : ''),
       current_hash: `slots:${allSlots.length}`,
       season_status: 'open',
       consecutive_errors: 0,
