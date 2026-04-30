@@ -391,6 +391,7 @@ type SlotClassification =
   | 'locked'
   | 'limit_reached'
   | 'season_blocked'
+  | 'hot_only'
   | 'unknown';
 
 interface ClassifiedSlot {
