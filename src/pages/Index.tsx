@@ -2,12 +2,14 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { KortConfigCard, type KortSite } from "@/components/KortConfigCard";
 import { HistoryFeed, type HistoryEntry } from "@/components/HistoryFeed";
+import { SlotsCalendar } from "@/components/SlotsCalendar";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Bell, Send, Activity, Clock } from "lucide-react";
+import { Bell, Send, Activity, Clock, CalendarDays, History, Settings } from "lucide-react";
 
 const CHAT_ID_KEY = "kort40-watch.default-chat-id";
 
@@ -174,16 +176,36 @@ const Index = () => {
           </div>
         </Card>
 
-        {/* Monitor card */}
+        {/* Tabs: calendar / history / settings */}
         <section className="mt-8">
-          <h2 className="font-mono-display text-lg font-medium mb-3">Мониторинг</h2>
-          <KortConfigCard site={site} defaultChatId={defaultChatId} />
-        </section>
+          <Tabs defaultValue="calendar" className="w-full">
+            <TabsList className="grid grid-cols-3 w-full max-w-md bg-card/60 backdrop-blur">
+              <TabsTrigger value="calendar" className="gap-1.5 font-mono-display text-xs">
+                <CalendarDays className="size-3.5" />
+                Календарь
+              </TabsTrigger>
+              <TabsTrigger value="history" className="gap-1.5 font-mono-display text-xs">
+                <History className="size-3.5" />
+                События
+              </TabsTrigger>
+              <TabsTrigger value="settings" className="gap-1.5 font-mono-display text-xs">
+                <Settings className="size-3.5" />
+                Настройки
+              </TabsTrigger>
+            </TabsList>
 
-        {/* History */}
-        <section className="mt-10">
-          <h2 className="font-mono-display text-lg font-medium mb-3">События</h2>
-          <HistoryFeed entries={history} site={site} />
+            <TabsContent value="calendar" className="mt-4">
+              <SlotsCalendar siteId={site?.id ?? null} lastCheckedAt={site?.last_checked_at ?? null} />
+            </TabsContent>
+
+            <TabsContent value="history" className="mt-4">
+              <HistoryFeed entries={history} site={site} />
+            </TabsContent>
+
+            <TabsContent value="settings" className="mt-4">
+              <KortConfigCard site={site} defaultChatId={defaultChatId} />
+            </TabsContent>
+          </Tabs>
         </section>
 
         <footer className="mt-14 pt-6 border-t border-border/60 text-xs text-muted-foreground font-mono-display flex flex-wrap items-center justify-between gap-2">
