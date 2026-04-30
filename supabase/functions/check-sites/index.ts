@@ -475,7 +475,9 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
           .map(shiftKort40Hour)
           .filter(isKort40VisibleHour),
       );
-      const hotVisible = new Set(toNumberArray(root.hot_available).filter(isKort40VisibleHour));
+      const hotVisible = new Set(
+        toNumberArray(root.hot_available).map(shiftKort40Hour).filter(isKort40VisibleHour),
+      );
       const rawAvailable = new Set(toNumberArray(root.available_hours));
 
       const now = new Date();
