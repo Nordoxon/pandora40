@@ -884,6 +884,7 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     locked: 0,
     limit_reached: 0,
     season_blocked: 0,
+    hot_only: 0,
     unknown: 0,
   };
   for (const c of allClassified) auditCounts[c.classification]++;
