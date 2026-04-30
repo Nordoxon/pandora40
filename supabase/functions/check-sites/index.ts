@@ -54,30 +54,65 @@ async function sendTelegram(_chatId: string | null | undefined, text: string) {
   let lastData: unknown = null;
   for (let i = 0; i < chunks.length; i++) {
     const part = chunks.length > 1 ? `${chunks[i]}\n\n<i>(${i + 1}/${chunks.length})</i>` : chunks[i];
-    const res = await fetch(`${GATEWAY_URL}/sendMessage`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
-        'X-Connection-Api-Key': TELEGRAM_API_KEY,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        chat_id: TELEGRAM_CHAT_ID,
-        text: part,
-        parse_mode: 'HTML',
-        disable_web_page_preview: true,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
+    // Retry transient failures (5xx from gateway/Telegram, network errors, 429 without retry_after)
+    const MAX_ATTEMPTS = 3;
+    let data: unknown = null;
+    let attempt = 0;
+    let delivered = false;
+    while (attempt < MAX_ATTEMPTS && !delivered) {
+      attempt++;
+      let res: Response | null = null;
+      let networkErr: unknown = null;
+      try {
+        res = await fetch(`${GATEWAY_URL}/sendMessage`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${LOVABLE_API_KEY}`,
+            'X-Connection-Api-Key': TELEGRAM_API_KEY,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            chat_id: TELEGRAM_CHAT_ID,
+            text: part,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+          }),
+        });
+      } catch (err) {
+        networkErr = err;
+      }
+
+      if (!res) {
+        // network / fetch failure
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise((r) => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
+          continue;
+        }
+        throw new Error(`Telegram network error: ${networkErr instanceof Error ? networkErr.message : String(networkErr)}`);
+      }
+
+      data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        delivered = true;
+        break;
+      }
+
       // Honour Telegram's retry_after on flood (429)
       const retryAfter = (data as any)?.parameters?.retry_after;
-      if (res.status === 429 && typeof retryAfter === 'number' && i < chunks.length - 1) {
+      if (res.status === 429 && typeof retryAfter === 'number') {
         await new Promise((r) => setTimeout(r, (retryAfter + 1) * 1000));
-        i--; // retry this chunk
+        attempt--; // don't count toward attempts
         continue;
       }
-      throw new Error(`Telegram error [${res.status}]: ${JSON.stringify(data)}`);
+
+      // Retry on transient errors: 5xx (incl. 502 upstream_request_failed) and 429
+      const isTransient = res.status >= 500 || res.status === 429 || res.status === 408;
+      if (isTransient && attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
+        continue;
+      }
+
+      throw new Error(`Telegram error [${res.status}] after ${attempt} attempt(s): ${JSON.stringify(data)}`);
     }
     lastData = data;
     // Pacing between messages: ~1.1s to stay under per-chat rate limit
