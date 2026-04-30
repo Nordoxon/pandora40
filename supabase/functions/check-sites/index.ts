@@ -941,6 +941,52 @@ Deno.serve(async (req) => {
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const supabase = createClient(supabaseUrl, serviceKey);
 
+  // Diagnose mode: return raw kort40 responses for the configured account
+  // so we can see exactly what the site says about THIS user.
+  const url = new URL(req.url);
+  if (url.searchParams.get('diagnose') === 'kort40') {
+    const { data: site } = await supabase
+      .from('watched_sites')
+      .select('*')
+      .eq('monitor_type', 'kort40')
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle();
+    if (!site) {
+      return new Response(JSON.stringify({ error: 'no kort40 site' }), {
+        status: 404,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+    // Force fresh login to make sure stale session isn't masking the issue
+    await supabase.from('kort_session').delete().eq('site_id', site.id);
+    const login = await getKort40Session(supabase, site);
+    if (login.status !== 'ok') {
+      return new Response(JSON.stringify({ login }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+    const profile = await kort40FetchProfile(login.jar).catch((e) => ({ error: String(e) }));
+    const today = new Date();
+    const probeDates: string[] = [];
+    for (let i = 0; i < 7; i++) {
+      probeDates.push(new Date(today.getTime() + i * 86400000).toISOString().slice(0, 10));
+    }
+    const slots: Record<string, unknown> = {};
+    for (const d of probeDates) {
+      try {
+        slots[d] = await kort40FetchSlots(login.jar, d);
+      } catch (e) {
+        slots[d] = { error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+    return new Response(
+      JSON.stringify({ profile, slots }, null, 2),
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+    );
+  }
+
   // Optional: check a single site by id (used by "check now" button)
   let onlySiteId: string | null = null;
   if (req.method === 'POST') {
