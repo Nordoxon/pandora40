@@ -8,44 +8,48 @@ All colors MUST be HSL.
 
 @layer base {
   :root {
-    /* Site Watcher — dark terminal/monitor aesthetic */
-    --background: 222 24% 7%;
-    --foreground: 150 20% 92%;
+    /* kort40 — clay court aesthetic: warm terracotta court + neon tennis-ball accent */
+    --background: 18 28% 8%;
+    --foreground: 40 25% 94%;
 
-    --card: 222 22% 10%;
-    --card-foreground: 150 20% 92%;
+    --card: 16 22% 11%;
+    --card-foreground: 40 25% 94%;
 
-    --popover: 222 22% 10%;
-    --popover-foreground: 150 20% 92%;
+    --popover: 16 22% 11%;
+    --popover-foreground: 40 25% 94%;
 
-    --primary: 142 72% 55%;
-    --primary-foreground: 222 30% 8%;
+    /* Tennis-ball neon yellow-green */
+    --primary: 72 95% 58%;
+    --primary-foreground: 18 40% 10%;
+    --primary-glow: 72 100% 68%;
 
-    --primary-glow: 142 90% 65%;
+    /* Clay court terracotta */
+    --clay: 14 65% 48%;
+    --clay-foreground: 40 30% 96%;
 
-    --secondary: 222 18% 14%;
-    --secondary-foreground: 150 20% 92%;
+    --secondary: 16 18% 15%;
+    --secondary-foreground: 40 25% 94%;
 
-    --muted: 222 18% 14%;
-    --muted-foreground: 220 10% 60%;
+    --muted: 16 18% 15%;
+    --muted-foreground: 30 12% 64%;
 
-    --accent: 142 72% 55%;
-    --accent-foreground: 222 30% 8%;
+    --accent: 14 65% 48%;
+    --accent-foreground: 40 30% 96%;
 
     --destructive: 0 75% 60%;
     --destructive-foreground: 0 0% 98%;
 
     --warning: 38 95% 60%;
-    --warning-foreground: 222 30% 8%;
+    --warning-foreground: 18 40% 10%;
 
-    --border: 222 18% 18%;
-    --input: 222 18% 16%;
-    --ring: 142 72% 55%;
+    --border: 16 18% 19%;
+    --input: 16 18% 17%;
+    --ring: 72 95% 58%;
 
     --radius: 0.625rem;
 
-    --gradient-bg: radial-gradient(1200px 600px at 10% -10%, hsl(142 72% 55% / 0.08), transparent 60%),
-      radial-gradient(900px 500px at 100% 0%, hsl(190 80% 50% / 0.06), transparent 60%),
+    --gradient-bg: radial-gradient(1200px 600px at 10% -10%, hsl(14 65% 48% / 0.18), transparent 60%),
+      radial-gradient(900px 500px at 100% 0%, hsl(72 95% 58% / 0.08), transparent 60%),
       hsl(var(--background));
     --shadow-glow: 0 0 0 1px hsl(var(--primary) / 0.25), 0 10px 40px -10px hsl(var(--primary) / 0.35);
     --shadow-card: 0 1px 0 0 hsl(0 0% 100% / 0.03) inset, 0 10px 30px -15px hsl(0 0% 0% / 0.6);
@@ -61,25 +65,25 @@ All colors MUST be HSL.
   }
 
   .dark {
-    --background: 222 24% 7%;
-    --foreground: 150 20% 92%;
-    --card: 222 22% 10%;
-    --card-foreground: 150 20% 92%;
-    --popover: 222 22% 10%;
-    --popover-foreground: 150 20% 92%;
-    --primary: 142 72% 55%;
-    --primary-foreground: 222 30% 8%;
-    --secondary: 222 18% 14%;
-    --secondary-foreground: 150 20% 92%;
-    --muted: 222 18% 14%;
-    --muted-foreground: 220 10% 60%;
-    --accent: 142 72% 55%;
-    --accent-foreground: 222 30% 8%;
+    --background: 18 28% 8%;
+    --foreground: 40 25% 94%;
+    --card: 16 22% 11%;
+    --card-foreground: 40 25% 94%;
+    --popover: 16 22% 11%;
+    --popover-foreground: 40 25% 94%;
+    --primary: 72 95% 58%;
+    --primary-foreground: 18 40% 10%;
+    --secondary: 16 18% 15%;
+    --secondary-foreground: 40 25% 94%;
+    --muted: 16 18% 15%;
+    --muted-foreground: 30 12% 64%;
+    --accent: 14 65% 48%;
+    --accent-foreground: 40 30% 96%;
     --destructive: 0 75% 60%;
     --destructive-foreground: 0 0% 98%;
-    --border: 222 18% 18%;
-    --input: 222 18% 16%;
-    --ring: 142 72% 55%;
+    --border: 16 18% 19%;
+    --input: 16 18% 17%;
+    --ring: 72 95% 58%;
     --sidebar-background: 240 5.9% 10%;
     --sidebar-foreground: 240 4.8% 95.9%;
     --sidebar-primary: 224.3 76.3% 48%;
@@ -117,10 +121,17 @@ All colors MUST be HSL.
   }
   .grid-bg {
     background-image:
-      linear-gradient(hsl(var(--border) / 0.6) 1px, transparent 1px),
-      linear-gradient(90deg, hsl(var(--border) / 0.6) 1px, transparent 1px);
-    background-size: 32px 32px;
-    mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+      linear-gradient(hsl(var(--clay) / 0.22) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--clay) / 0.22) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse at center, black 25%, transparent 78%);
+  }
+  .court-lines {
+    background:
+      linear-gradient(180deg, transparent 0 49%, hsl(var(--foreground) / 0.08) 49% 50%, transparent 50%),
+      linear-gradient(90deg, transparent 0 49.5%, hsl(var(--foreground) / 0.08) 49.5% 50.5%, transparent 50.5%),
+      hsl(var(--clay) / 0.18);
+    border: 1px solid hsl(var(--clay) / 0.35);
   }
   .pulse-dot {
     box-shadow: 0 0 0 0 hsl(var(--primary) / 0.6);
