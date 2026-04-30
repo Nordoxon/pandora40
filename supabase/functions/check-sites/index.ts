@@ -912,7 +912,8 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   console.log(
     `kort40 audit ${site.id}: free=${auditCounts.available} busy=${auditCounts.busy} ` +
       `not_bookable=${auditCounts.not_bookable} locked=${auditCounts.locked} ` +
-      `limit_reached=${auditCounts.limit_reached} unknown=${auditCounts.unknown} ` +
+      `limit_reached=${auditCounts.limit_reached} hot_only=${auditCounts.hot_only} ` +
+      `unknown=${auditCounts.unknown} ` +
       `total=${allClassified.length}`,
   );
 
