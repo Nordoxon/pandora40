@@ -754,25 +754,6 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   };
   for (const c of allClassified) auditCounts[c.classification]++;
 
-  // If kort40 explicitly told us "booking unavailable" but the API still
-  // returns 200 with an empty list, surface that as season_blocked rows
-  // (one synthetic row per date) so the dashboard can show the reason.
-  if (allClassified.length === 0 && detailMessage) {
-    for (const d of dates) {
-      allClassified.push({
-        key: `${d}|__season_blocked__`,
-        date: d,
-        startTime: '',
-        endTime: '',
-        court: '—',
-        classification: 'season_blocked',
-        reason: detailMessage.slice(0, 250),
-        raw: { detail: detailMessage },
-      });
-      auditCounts.season_blocked++;
-    }
-  }
-
   await supabase.from('kort_slot_audit').delete().eq('site_id', site.id);
   if (allClassified.length > 0) {
     const auditRows = allClassified.map((c) => ({
