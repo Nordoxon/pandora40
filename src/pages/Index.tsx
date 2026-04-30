@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { KortConfigCard, type KortSite } from "@/components/KortConfigCard";
+import { type KortSite } from "@/components/KortConfigCard";
 import { HistoryFeed, type HistoryEntry } from "@/components/HistoryFeed";
 import { SlotsCalendar } from "@/components/SlotsCalendar";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { toast } from "sonner";
-import { Bell, Send, Activity, Clock, CalendarDays, History, Settings, Lock } from "lucide-react";
+import { Bell, Send, Activity, Clock, CalendarDays, History, Lock } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ru } from "date-fns/locale";
 
@@ -201,6 +201,7 @@ const Index = () => {
         <section className="mt-6 sm:mt-8">
           <Tabs defaultValue="calendar" className="w-full">
             <TabsList className="grid grid-cols-3 w-full sm:max-w-md bg-card/60 backdrop-blur">
+            <TabsList className="grid grid-cols-2 w-full sm:max-w-sm bg-card/60 backdrop-blur">
               <TabsTrigger value="calendar" className="gap-1.5 font-mono-display text-xs">
                 <CalendarDays className="size-3.5" />
                 Календарь
@@ -208,10 +209,6 @@ const Index = () => {
               <TabsTrigger value="history" className="gap-1.5 font-mono-display text-xs">
                 <History className="size-3.5" />
                 События
-              </TabsTrigger>
-              <TabsTrigger value="settings" className="gap-1.5 font-mono-display text-xs">
-                <Settings className="size-3.5" />
-                Настройки
               </TabsTrigger>
             </TabsList>
 
@@ -221,10 +218,6 @@ const Index = () => {
 
             <TabsContent value="history" className="mt-4">
               <HistoryFeed entries={history} site={site} />
-            </TabsContent>
-
-            <TabsContent value="settings" className="mt-4">
-              <KortConfigCard site={site} />
             </TabsContent>
           </Tabs>
         </section>
