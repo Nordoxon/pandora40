@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -89,18 +89,34 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
     setLoading(false);
   }
 
+  // Debounce realtime reloads — when the season opens, hundreds of insert
+  // events can arrive in a burst. Coalesce them into a single fetch.
+  const reloadTimer = useRef<number | null>(null);
   useEffect(() => {
     load();
     if (!siteId) return;
+    const scheduleReload = () => {
+      if (reloadTimer.current !== null) {
+        window.clearTimeout(reloadTimer.current);
+      }
+      reloadTimer.current = window.setTimeout(() => {
+        reloadTimer.current = null;
+        load();
+      }, 800);
+    };
     const ch = supabase
       .channel(`kort-slots-${siteId}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "kort_slots", filter: `site_id=eq.${siteId}` },
-        load,
+        scheduleReload,
       )
       .subscribe();
     return () => {
+      if (reloadTimer.current !== null) {
+        window.clearTimeout(reloadTimer.current);
+        reloadTimer.current = null;
+      }
       supabase.removeChannel(ch);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

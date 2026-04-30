@@ -22,20 +22,70 @@ async function sendTelegram(_chatId: string | null | undefined, text: string) {
   if (!LOVABLE_API_KEY || !TELEGRAM_API_KEY || !TELEGRAM_CHAT_ID) {
     throw new Error('Telegram credentials (TELEGRAM_CHAT_ID) are not configured');
   }
-  const res = await fetch(`${GATEWAY_URL}/sendMessage`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${LOVABLE_API_KEY}`,
-      'X-Connection-Api-Key': TELEGRAM_API_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML', disable_web_page_preview: true }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(`Telegram error [${res.status}]: ${JSON.stringify(data)}`);
+  // Telegram hard limit is 4096 chars per message. Split safely on line breaks
+  // to avoid breaking HTML tags mid-tag. Also throttle to respect Telegram rate limits
+  // (≈1 msg/sec to the same chat).
+  const MAX_LEN = 3800; // keep a safety margin under 4096
+  const chunks: string[] = [];
+  if (text.length <= MAX_LEN) {
+    chunks.push(text);
+  } else {
+    const lines = text.split('\n');
+    let buf = '';
+    for (const line of lines) {
+      // If a single line is itself too long, hard-split it.
+      if (line.length > MAX_LEN) {
+        if (buf) { chunks.push(buf); buf = ''; }
+        for (let i = 0; i < line.length; i += MAX_LEN) {
+          chunks.push(line.slice(i, i + MAX_LEN));
+        }
+        continue;
+      }
+      if (buf.length + line.length + 1 > MAX_LEN) {
+        chunks.push(buf);
+        buf = line;
+      } else {
+        buf = buf ? `${buf}\n${line}` : line;
+      }
+    }
+    if (buf) chunks.push(buf);
   }
-  return data;
+
+  let lastData: unknown = null;
+  for (let i = 0; i < chunks.length; i++) {
+    const part = chunks.length > 1 ? `${chunks[i]}\n\n<i>(${i + 1}/${chunks.length})</i>` : chunks[i];
+    const res = await fetch(`${GATEWAY_URL}/sendMessage`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${LOVABLE_API_KEY}`,
+        'X-Connection-Api-Key': TELEGRAM_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text: part,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      // Honour Telegram's retry_after on flood (429)
+      const retryAfter = (data as any)?.parameters?.retry_after;
+      if (res.status === 429 && typeof retryAfter === 'number' && i < chunks.length - 1) {
+        await new Promise((r) => setTimeout(r, (retryAfter + 1) * 1000));
+        i--; // retry this chunk
+        continue;
+      }
+      throw new Error(`Telegram error [${res.status}]: ${JSON.stringify(data)}`);
+    }
+    lastData = data;
+    // Pacing between messages: ~1.1s to stay under per-chat rate limit
+    if (i < chunks.length - 1) {
+      await new Promise((r) => setTimeout(r, 1100));
+    }
+  }
+  return lastData;
 }
 
 async function fetchHtml(url: string): Promise<string> {
@@ -361,16 +411,18 @@ function buildSlotsList(slots: NormalizedSlot[], header: string): string {
   }
   const lines: string[] = [header];
   const dateKeys = [...byDate.keys()].sort();
-  for (const d of dateKeys.slice(0, 10)) {
+  // Сообщение всё равно будет автоматически разбито на части в sendTelegram,
+  // поэтому показываем больше дней и слотов при открытии сезона.
+  for (const d of dateKeys.slice(0, 30)) {
     lines.push(`\n📅 <b>${formatDateRu(d)}</b>`);
     const dayList = byDate.get(d)!.sort((a, b) => a.startTime.localeCompare(b.startTime));
-    for (const s of dayList.slice(0, 12)) {
+    for (const s of dayList.slice(0, 20)) {
       const time = s.endTime ? `${s.startTime}–${s.endTime}` : s.startTime;
       lines.push(`• ${time} · ${s.court}`);
     }
-    if (dayList.length > 12) lines.push(`• …и ещё ${dayList.length - 12}`);
+    if (dayList.length > 20) lines.push(`• …и ещё ${dayList.length - 20}`);
   }
-  if (dateKeys.length > 10) lines.push(`\n…и ещё ${dateKeys.length - 10} дней`);
+  if (dateKeys.length > 30) lines.push(`\n…и ещё ${dateKeys.length - 30} дней`);
   lines.push(`\n<a href="${KORT40_BASE}/">Открыть kort40.online</a>`);
   return lines.join('\n');
 }
