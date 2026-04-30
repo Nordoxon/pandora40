@@ -15,11 +15,12 @@ async function sha256(text: string): Promise<string> {
     .join('');
 }
 
-async function sendTelegram(chatId: string, text: string) {
+async function sendTelegram(_chatId: string | null | undefined, text: string) {
   const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
   const TELEGRAM_API_KEY = Deno.env.get('TELEGRAM_API_KEY');
-  if (!LOVABLE_API_KEY || !TELEGRAM_API_KEY) {
-    throw new Error('Telegram credentials are not configured');
+  const TELEGRAM_CHAT_ID = Deno.env.get('TELEGRAM_CHAT_ID');
+  if (!LOVABLE_API_KEY || !TELEGRAM_API_KEY || !TELEGRAM_CHAT_ID) {
+    throw new Error('Telegram credentials (TELEGRAM_CHAT_ID) are not configured');
   }
   const res = await fetch(`${GATEWAY_URL}/sendMessage`, {
     method: 'POST',
@@ -28,7 +29,7 @@ async function sendTelegram(chatId: string, text: string) {
       'X-Connection-Api-Key': TELEGRAM_API_KEY,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true }),
+    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML', disable_web_page_preview: true }),
   });
   const data = await res.json();
   if (!res.ok) {

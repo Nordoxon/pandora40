@@ -11,18 +11,11 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { chat_id } = await req.json();
-    if (!chat_id || typeof chat_id !== 'string') {
-      return new Response(JSON.stringify({ error: 'chat_id is required' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
     const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
     const TELEGRAM_API_KEY = Deno.env.get('TELEGRAM_API_KEY');
-    if (!LOVABLE_API_KEY || !TELEGRAM_API_KEY) {
-      throw new Error('Telegram credentials are not configured');
+    const TELEGRAM_CHAT_ID = Deno.env.get('TELEGRAM_CHAT_ID');
+    if (!LOVABLE_API_KEY || !TELEGRAM_API_KEY || !TELEGRAM_CHAT_ID) {
+      throw new Error('Telegram credentials (TELEGRAM_CHAT_ID) are not configured');
     }
 
     const res = await fetch(`${GATEWAY_URL}/sendMessage`, {
@@ -33,8 +26,8 @@ Deno.serve(async (req) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        chat_id,
-        text: '✅ Тестовое сообщение от Site Watcher. Уведомления настроены корректно.',
+        chat_id: TELEGRAM_CHAT_ID,
+        text: '✅ Тестовое сообщение от kort40 watch. Уведомления настроены корректно — этот чат будет получать оповещения о свободных слотах.',
       }),
     });
     const data = await res.json();
