@@ -46,6 +46,50 @@ export type Database = {
           },
         ]
       }
+      kort_slots: {
+        Row: {
+          court_name: string | null
+          created_at: string
+          end_time: string | null
+          id: string
+          raw: Json | null
+          site_id: string
+          slot_date: string
+          slot_key: string
+          start_time: string | null
+        }
+        Insert: {
+          court_name?: string | null
+          created_at?: string
+          end_time?: string | null
+          id?: string
+          raw?: Json | null
+          site_id: string
+          slot_date: string
+          slot_key: string
+          start_time?: string | null
+        }
+        Update: {
+          court_name?: string | null
+          created_at?: string
+          end_time?: string | null
+          id?: string
+          raw?: Json | null
+          site_id?: string
+          slot_date?: string
+          slot_key?: string
+          start_time?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "kort_slots_site_id_fkey"
+            columns: ["site_id"]
+            isOneToOne: false
+            referencedRelation: "watched_sites"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       watched_sites: {
         Row: {
           created_at: string
@@ -55,6 +99,7 @@ export type Database = {
           label: string | null
           last_checked_at: string | null
           last_status: string | null
+          monitor_type: string
           telegram_chat_id: string
           updated_at: string
           url: string
@@ -67,6 +112,7 @@ export type Database = {
           label?: string | null
           last_checked_at?: string | null
           last_status?: string | null
+          monitor_type?: string
           telegram_chat_id: string
           updated_at?: string
           url: string
@@ -79,6 +125,7 @@ export type Database = {
           label?: string | null
           last_checked_at?: string | null
           last_status?: string | null
+          monitor_type?: string
           telegram_chat_id?: string
           updated_at?: string
           url?: string
