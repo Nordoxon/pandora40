@@ -2,8 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, RefreshCw, Trophy } from "lucide-react";
-import { toast } from "sonner";
+import { ChevronLeft, ChevronRight, Trophy } from "lucide-react";
 
 interface KortSlotRow {
   id: string;
@@ -75,7 +74,6 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
   const [selected, setSelected] = useState<Date>(today);
   const [slots, setSlots] = useState<KortSlotRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
 
   async function load() {
     if (!siteId) return;
@@ -121,23 +119,6 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [siteId]);
-
-  async function refreshNow() {
-    if (!siteId) return;
-    setRefreshing(true);
-    try {
-      const { error } = await supabase.functions.invoke("check-sites", {
-        body: { site_id: siteId },
-      });
-      if (error) throw error;
-      toast.success("Данные обновлены");
-      await load();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Ошибка обновления");
-    } finally {
-      setRefreshing(false);
-    }
-  }
 
   // Index slots by date
   const slotsByDate = useMemo(() => {
@@ -188,9 +169,9 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
   return (
     <div className="space-y-4">
       {/* Header / controls */}
-      <Card className="p-4 bg-card/60 backdrop-blur">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
+      <Card className="p-3 sm:p-4 bg-card/60 backdrop-blur">
+        <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+          <div className="flex items-center gap-1 sm:gap-2">
             <Button
               size="icon"
               variant="ghost"
@@ -200,7 +181,7 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
             >
               <ChevronLeft className="size-4" />
             </Button>
-            <div className="font-mono-display text-base font-medium capitalize min-w-[160px] text-center">
+            <div className="font-mono-display text-sm sm:text-base font-medium capitalize min-w-[130px] sm:min-w-[160px] text-center">
               {monthTitle}
             </div>
             <Button
@@ -213,20 +194,8 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
               <ChevronRight className="size-4" />
             </Button>
           </div>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground font-mono-display">
-            <span>
-              всего свободно: <span className="text-primary">{totalFree}</span>
-            </span>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={refreshNow}
-              disabled={refreshing}
-              className="gap-1.5"
-            >
-              <RefreshCw className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} />
-              Обновить
-            </Button>
+          <div className="text-xs text-muted-foreground font-mono-display">
+            всего свободно: <span className="text-primary">{totalFree}</span>
           </div>
         </div>
 
@@ -238,7 +207,7 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
         </div>
 
         {/* Day grid */}
-        <div className="mt-1 grid grid-cols-7 gap-1">
+        <div className="mt-1 grid grid-cols-7 gap-0.5 sm:gap-1">
           {grid.map((d) => {
             const inMonth = d.getMonth() === monthDate.getMonth();
             const inHorizon = d >= today && d <= horizonEnd;
@@ -276,16 +245,16 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
                 key={key}
                 disabled={!inHorizon}
                 onClick={() => setSelected(d)}
-                className={`relative aspect-square rounded-md p-1.5 text-left transition-colors ${bg} ${ring} ${
+                className={`relative aspect-square rounded-md p-1 sm:p-1.5 text-left transition-colors ${bg} ${ring} ${
                   inHorizon ? "hover:bg-primary/40 cursor-pointer" : "opacity-30 cursor-not-allowed"
                 } ${!inMonth ? "opacity-50" : ""}`}
                 aria-label={`${key}: ${dayCount} свободных слотов`}
               >
-                <div className={`text-xs font-mono-display ${free ? "text-foreground" : "text-muted-foreground"}`}>
+                <div className={`text-[11px] sm:text-xs font-mono-display ${free ? "text-foreground" : "text-muted-foreground"}`}>
                   {d.getDate()}
                 </div>
                 {inHorizon && (
-                  <div className={`absolute bottom-1 right-1.5 text-[10px] font-mono-display font-semibold ${
+                  <div className={`absolute bottom-0.5 right-1 sm:bottom-1 sm:right-1.5 text-[9px] sm:text-[10px] font-mono-display font-semibold ${
                     free ? "text-primary-foreground/90" : "text-muted-foreground/70"
                   }`}>
                     {free ? dayCount : "—"}
@@ -318,7 +287,7 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
       </Card>
 
       {/* Selected day details */}
-      <Card className="p-5 bg-card/60 backdrop-blur">
+      <Card className="p-4 sm:p-5 bg-card/60 backdrop-blur">
         <div className="flex items-center justify-between gap-3 mb-3">
           <h3 className="font-mono-display font-medium">
             {formatSelectedTitle(selected)}

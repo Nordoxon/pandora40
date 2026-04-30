@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { RefreshCw, Trash2, Trophy, Lock } from "lucide-react";
+import { Trash2, Trophy, Lock } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ru } from "date-fns/locale";
 
@@ -32,7 +32,6 @@ interface Props {
 export function KortConfigCard({ site }: Props) {
   const [label, setLabel] = useState(site?.label ?? "");
   const [saving, setSaving] = useState(false);
-  const [checking, setChecking] = useState(false);
 
   const isActive = site?.is_active ?? false;
   const isError = site?.last_status?.startsWith("error");
@@ -84,22 +83,6 @@ export function KortConfigCard({ site }: Props) {
       .update({ is_active: v })
       .eq("id", site.id);
     if (error) toast.error(error.message);
-  }
-
-  async function checkNow() {
-    if (!site) return;
-    setChecking(true);
-    try {
-      const { error } = await supabase.functions.invoke("check-sites", {
-        body: { site_id: site.id },
-      });
-      if (error) throw error;
-      toast.success("Проверка выполнена");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Ошибка проверки");
-    } finally {
-      setChecking(false);
-    }
   }
 
   async function stopAndRemove() {
@@ -245,10 +228,6 @@ export function KortConfigCard({ site }: Props) {
       <div className="mt-5 flex flex-wrap gap-2">
         <Button size="sm" onClick={saveSettings} disabled={saving}>
           {saving ? "Сохранение…" : "Сохранить"}
-        </Button>
-        <Button size="sm" variant="secondary" onClick={checkNow} disabled={checking} className="gap-1.5">
-          <RefreshCw className={`size-3.5 ${checking ? "animate-spin" : ""}`} />
-          Проверить сейчас
         </Button>
         <Button
           size="sm"
