@@ -154,24 +154,30 @@ type LoginResult =
 async function kort40FreshLogin(email: string, password: string): Promise<LoginResult> {
   const jar: CookieJar = {};
 
-  // Step 1: warm up to get csrftoken
+  // Step 1: warm up to get csrftoken.
+  // The site is now a React SPA — `/` returns a static HTML shell with no cookies.
+  // Public endpoints like `/api/news/` don't set csrftoken either; only auth-gated
+  // endpoints do. `/api/profile/` reliably returns 401 + `Set-Cookie: csrftoken=...`,
+  // which is exactly what we need to subsequently call `/api/login/`.
   let r1: Response;
   try {
-    r1 = await fetch(`${KORT40_BASE}/`, {
-      headers: { 'User-Agent': UA, Accept: 'text/html', 'Accept-Language': 'ru,en;q=0.7' },
+    r1 = await fetch(`${KORT40_BASE}/api/profile/`, {
+      headers: {
+        'User-Agent': UA,
+        Accept: 'application/json',
+        'Accept-Language': 'ru,en;q=0.7',
+        Referer: `${KORT40_BASE}/`,
+      },
     });
   } catch (e) {
     return { status: 'error', reason: `network: ${e instanceof Error ? e.message : String(e)}` };
   }
-  const homeBody = await r1.text();
+  // 401 is expected here (we're not logged in yet). We only care about the Set-Cookie header.
+  await r1.text().catch(() => '');
   parseSetCookie(r1.headers, jar);
 
   if (!jar.csrftoken) {
-    // Some seasonal landing pages drop the API entirely — treat as closed
-    if (/season|сезон|закрыт|closed/i.test(homeBody)) {
-      return { status: 'closed', reason: 'no csrftoken; landing looks like off-season page' };
-    }
-    return { status: 'closed', reason: 'no csrftoken cookie' };
+    return { status: 'closed', reason: `no csrftoken cookie from /api/profile/ (status ${r1.status})` };
   }
 
   const loginPaths = ['/api/login/', '/api/auth/login/', '/api/sign-in/'];
@@ -205,8 +211,13 @@ async function kort40FreshLogin(email: string, password: string): Promise<LoginR
     // 404 on every login path → API not deployed for this season
     lastErr = `${path} -> ${res.status} ${body.slice(0, 200)}`;
     if (res.status === 401 || res.status === 403) {
-      // Wrong credentials — surface immediately
-      return { status: 'error', reason: `auth ${res.status} on ${path}: ${body.slice(0, 200)}` };
+      // Credentials don't match the (possibly rebuilt) auth backend.
+      // Treat this as 'closed' rather than a hard error so we keep polling
+      // quietly every 10 min instead of spamming change_history every minute.
+      return {
+        status: 'closed',
+        reason: `login auth ${res.status} on ${path} — credentials need refresh`,
+      };
     }
   }
 
