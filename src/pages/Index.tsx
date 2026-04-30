@@ -15,6 +15,7 @@ const Index = () => {
   const [site, setSite] = useState<KortSite | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [testing, setTesting] = useState(false);
+  const [busyCount, setBusyCount] = useState<number | null>(null);
 
   useEffect(() => {
     document.title = "kort40 watch — мониторинг свободных слотов на kort40.online";
@@ -42,6 +43,32 @@ const Index = () => {
     const first = (s ?? [])[0] as KortSite | undefined;
     setSite(first ?? null);
     setHistory((h ?? []) as HistoryEntry[]);
+
+    // Count busy slots from the most recent audit snapshot
+    if (first?.id) {
+      const { data: latest } = await supabase
+        .from("kort_slot_audit")
+        .select("classified_at")
+        .eq("site_id", first.id)
+        .order("classified_at", { ascending: false })
+        .limit(1);
+      const latestAt = latest?.[0]?.classified_at;
+      if (latestAt) {
+        // Take a small window around the latest snapshot (same check run)
+        const since = new Date(new Date(latestAt).getTime() - 60_000).toISOString();
+        const { count } = await supabase
+          .from("kort_slot_audit")
+          .select("*", { count: "exact", head: true })
+          .eq("site_id", first.id)
+          .eq("classification", "busy")
+          .gte("classified_at", since);
+        setBusyCount(count ?? 0);
+      } else {
+        setBusyCount(null);
+      }
+    } else {
+      setBusyCount(null);
+    }
   }
 
   useEffect(() => {
@@ -73,7 +100,6 @@ const Index = () => {
     ? Number(site.current_hash.slice(6)) || 0
     : null;
   const isError = site?.last_status?.startsWith("error");
-  const changesCount = history.filter((h) => h.event_type === "change").length;
   const seasonClosed = site?.season_status === "closed";
   const seasonOpen = site?.season_status === "open";
   const nextCheckLabel = site?.next_check_at
@@ -156,8 +182,8 @@ const Index = () => {
           />
           <StatCard
             icon={<Bell className="size-4" />}
-            label="новых событий"
-            value={changesCount}
+            label="занято"
+            value={busyCount ?? "—"}
             accent="warning"
           />
           <StatCard
