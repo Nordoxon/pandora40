@@ -20,6 +20,9 @@ export interface KortSite {
   last_status: string | null;
   is_active: boolean;
   monitor_type?: string;
+  season_status?: string | null;
+  next_check_at?: string | null;
+  consecutive_errors?: number | null;
 }
 
 interface Props {
