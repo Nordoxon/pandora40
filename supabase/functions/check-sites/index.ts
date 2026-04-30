@@ -408,6 +408,29 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
           .filter((h) => Number.isFinite(h));
       };
 
+      // Day fully blocked: all hour arrays empty + a `detail` reason.
+      // Don't fabricate hourly slots — only emit a season_blocked marker.
+      const totalHours =
+        (Array.isArray(root.available_hours) ? root.available_hours.length : 0) +
+        (Array.isArray(root.reserved) ? root.reserved.length : 0) +
+        (Array.isArray(root.hot_available) ? root.hot_available.length : 0) +
+        (Array.isArray(root.reserved_hours_by_current_user)
+          ? root.reserved_hours_by_current_user.length
+          : 0);
+      if (totalHours === 0 && typeof root.detail === 'string' && root.detail.trim().length > 0) {
+        out.push({
+          key: `${date}|__day_blocked__`,
+          date,
+          startTime: '',
+          endTime: '',
+          court: '—',
+          classification: 'season_blocked',
+          reason: (root.detail as string).slice(0, 250),
+          raw: { detail: root.detail },
+        });
+        return out;
+      }
+
       const reservedShifted = new Set(
         toNumberArray(root.reserved).map(shiftKort40Hour).filter(isKort40VisibleHour),
       );
