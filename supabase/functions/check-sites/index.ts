@@ -411,16 +411,18 @@ function buildSlotsList(slots: NormalizedSlot[], header: string): string {
   }
   const lines: string[] = [header];
   const dateKeys = [...byDate.keys()].sort();
-  for (const d of dateKeys.slice(0, 10)) {
+  // Сообщение всё равно будет автоматически разбито на части в sendTelegram,
+  // поэтому показываем больше дней и слотов при открытии сезона.
+  for (const d of dateKeys.slice(0, 30)) {
     lines.push(`\n📅 <b>${formatDateRu(d)}</b>`);
     const dayList = byDate.get(d)!.sort((a, b) => a.startTime.localeCompare(b.startTime));
-    for (const s of dayList.slice(0, 12)) {
+    for (const s of dayList.slice(0, 20)) {
       const time = s.endTime ? `${s.startTime}–${s.endTime}` : s.startTime;
       lines.push(`• ${time} · ${s.court}`);
     }
-    if (dayList.length > 12) lines.push(`• …и ещё ${dayList.length - 12}`);
+    if (dayList.length > 20) lines.push(`• …и ещё ${dayList.length - 20}`);
   }
-  if (dateKeys.length > 10) lines.push(`\n…и ещё ${dateKeys.length - 10} дней`);
+  if (dateKeys.length > 30) lines.push(`\n…и ещё ${dateKeys.length - 30} дней`);
   lines.push(`\n<a href="${KORT40_BASE}/">Открыть kort40.online</a>`);
   return lines.join('\n');
 }
