@@ -314,13 +314,42 @@ interface NormalizedSlot {
   raw: unknown;
 }
 
+type SlotClassification =
+  | 'available'
+  | 'busy'
+  | 'not_bookable'
+  | 'locked'
+  | 'limit_reached'
+  | 'unknown';
+
+interface ClassifiedSlot {
+  key: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  court: string;
+  classification: SlotClassification;
+  reason: string;
+  raw: unknown;
+}
+
 /**
  * Normalize unknown response shapes into a flat list of available slots.
  * Recursively walks the JSON, collects objects that look like slots
  * (have time/court fields) and only keeps available ones.
  */
 function extractAvailableSlots(data: unknown, date: string): NormalizedSlot[] {
-  const out: NormalizedSlot[] = [];
+  return extractClassifiedSlots(data, date)
+    .filter((s) => s.classification === 'available')
+    .map(({ classification: _c, reason: _r, ...rest }) => rest);
+}
+
+/**
+ * Walk the API response and classify EVERY slot-like object we find.
+ * Used to surface why some visually-present slots aren't actually bookable.
+ */
+function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
+  const out: ClassifiedSlot[] = [];
   const seen = new WeakSet<object>();
 
   function walk(node: unknown, ctx: { court?: string }) {
@@ -373,18 +402,64 @@ function extractAvailableSlots(data: unknown, date: string): NormalizedSlot[] {
       ctx.court ??
       '—';
 
-    if (start && (isAvailable || (!isExplicitlyBusy && obj.user_id == null && obj.user == null && obj.client == null))) {
-      // Only count as available if explicitly available OR has no owner/booking.
-      if (isAvailable) {
-        out.push({
-          key: `${date}|${courtName}|${start}|${end ?? ''}`,
-          date,
-          startTime: String(start),
-          endTime: end ? String(end) : '',
-          court: String(courtName),
-          raw: obj,
-        });
+    if (start) {
+      // Heuristic flags for "visible but not bookable" buckets
+      const isLocked =
+        obj.is_locked === true ||
+        obj.locked === true ||
+        obj.is_blocked === true ||
+        obj.blocked === true ||
+        obj.status === 'locked' ||
+        obj.status === 'blocked' ||
+        obj.status === 'closed';
+      const isNotBookable =
+        obj.is_bookable === false ||
+        obj.bookable === false ||
+        obj.can_book === false ||
+        obj.is_available_for_booking === false;
+      const reachedLimit =
+        obj.limit_reached === true ||
+        obj.over_limit === true ||
+        obj.too_many_bookings === true ||
+        (typeof obj.error === 'string' && /limit|превыш/i.test(obj.error as string));
+      const hasOwner =
+        obj.user_id != null || obj.user != null || obj.client != null || obj.client_id != null;
+
+      let classification: SlotClassification;
+      let reason: string;
+      if (isAvailable && !isLocked && !isNotBookable && !reachedLimit) {
+        classification = 'available';
+        reason = 'flag:available';
+      } else if (reachedLimit) {
+        classification = 'limit_reached';
+        reason = 'flag:limit_reached';
+      } else if (isLocked) {
+        classification = 'locked';
+        reason = 'flag:locked/blocked/closed';
+      } else if (isNotBookable) {
+        classification = 'not_bookable';
+        reason = 'flag:bookable=false';
+      } else if (isExplicitlyBusy || hasOwner) {
+        classification = 'busy';
+        reason = hasOwner ? 'has owner/client' : 'flag:busy/booked';
+      } else if (isAvailable === false && !hasOwner) {
+        classification = 'not_bookable';
+        reason = 'available=false, no owner';
+      } else {
+        classification = 'unknown';
+        reason = `keys=${Object.keys(obj).slice(0, 8).join(',')}`;
       }
+
+      out.push({
+        key: `${date}|${courtName}|${start}|${end ?? ''}`,
+        date,
+        startTime: String(start),
+        endTime: end ? String(end) : '',
+        court: String(courtName),
+        classification,
+        reason,
+        raw: obj,
+      });
     }
 
     // Recurse into nested fields
