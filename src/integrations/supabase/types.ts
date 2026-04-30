@@ -73,6 +73,51 @@ export type Database = {
         }
         Relationships: []
       }
+      kort_slot_audit: {
+        Row: {
+          classification: string
+          classified_at: string
+          court_name: string | null
+          created_at: string
+          end_time: string | null
+          id: string
+          raw: Json | null
+          reason: string | null
+          site_id: string
+          slot_date: string
+          slot_key: string
+          start_time: string | null
+        }
+        Insert: {
+          classification: string
+          classified_at?: string
+          court_name?: string | null
+          created_at?: string
+          end_time?: string | null
+          id?: string
+          raw?: Json | null
+          reason?: string | null
+          site_id: string
+          slot_date: string
+          slot_key: string
+          start_time?: string | null
+        }
+        Update: {
+          classification?: string
+          classified_at?: string
+          court_name?: string | null
+          created_at?: string
+          end_time?: string | null
+          id?: string
+          raw?: Json | null
+          reason?: string | null
+          site_id?: string
+          slot_date?: string
+          slot_key?: string
+          start_time?: string | null
+        }
+        Relationships: []
+      }
       kort_slots: {
         Row: {
           court_name: string | null
