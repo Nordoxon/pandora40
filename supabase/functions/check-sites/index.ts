@@ -305,6 +305,23 @@ async function kort40FetchSlots(jar: CookieJar, date: string): Promise<unknown> 
   }
 }
 
+/** Fetch logged-in user profile — used to diagnose account-specific blocks. */
+async function kort40FetchProfile(jar: CookieJar): Promise<unknown> {
+  const res = await fetch(`${KORT40_BASE}/api/profile/`, {
+    headers: {
+      'User-Agent': UA,
+      Accept: 'application/json',
+      Referer: `${KORT40_BASE}/`,
+      Cookie: jarToHeader(jar),
+      'X-CSRFToken': jar.csrftoken ?? '',
+    },
+  });
+  const text = await res.text();
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { parsed = { _raw: text.slice(0, 500) }; }
+  return { _status: res.status, ...(parsed as object) };
+}
+
 interface NormalizedSlot {
   key: string;
   date: string;
