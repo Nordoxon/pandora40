@@ -1003,7 +1003,9 @@ Deno.serve(async (req) => {
     const profile = await kort40FetchProfile(login.jar).catch((e) => ({ error: String(e) }));
     const today = new Date();
     const probeDates: string[] = [];
-    for (let i = 0; i < 7; i++) {
+    const horizonParam = Number(url.searchParams.get('days') ?? '30');
+    const horizon = Number.isFinite(horizonParam) ? Math.max(1, Math.min(30, horizonParam)) : 30;
+    for (let i = 0; i < horizon; i++) {
       probeDates.push(new Date(today.getTime() + i * 86400000).toISOString().slice(0, 10));
     }
     const slots: Record<string, unknown> = {};
@@ -1014,8 +1016,16 @@ Deno.serve(async (req) => {
         slots[d] = { error: e instanceof Error ? e.message : String(e) };
       }
     }
+    // Compact view: dates where current user already has a reservation
+    const userBookings: Record<string, number[]> = {};
+    for (const [d, raw] of Object.entries(slots)) {
+      const r = raw as { reserved_hours_by_current_user?: unknown };
+      if (Array.isArray(r?.reserved_hours_by_current_user) && r.reserved_hours_by_current_user.length > 0) {
+        userBookings[d] = r.reserved_hours_by_current_user as number[];
+      }
+    }
     return new Response(
-      JSON.stringify({ profile, slots }, null, 2),
+      JSON.stringify({ profile, userBookings, slots }, null, 2),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   }
