@@ -500,19 +500,19 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         } else if (isTodayMoscow && hour <= currentHourMoscow) {
           classification = 'not_bookable';
           reason = 'past';
-        } else if (hotVisible.has(hour)) {
-          // Present in `hot_available` only — this is "Свободная игра" on the
-          // kort40 UI (orange), NOT a free court slot we can book.
-          classification = 'hot_only';
-          reason = 'hot_available_only';
         } else {
-          // Empirically verified against the kort40 UI: a slot is bookable
-          // (green "Свободно" on the official site) when it is within working
-          // hours and NOT in `reserved` / `user_reserved` / past / hot-only.
-          // The `available_hours` field is the season schedule, not the
-          // realtime free list, so we don't gate on it.
+          // IMPORTANT: `hot_available` is not a reliable blocker for booking.
+          // On real kort40 snapshots it can contain hours that are visibly green
+          // and bookable on the official site (for example 2026-05-09 21:00).
+          // So we only trust hard negative signals (`reserved`,
+          // `reserved_hours_by_current_user`, past time). Everything else in the
+          // visible ring is treated as available.
           classification = 'available';
-          reason = rawAvailable.has(hour) ? 'available_hours' : 'derived_free';
+          reason = rawAvailable.has(hour)
+            ? 'available_hours'
+            : hotVisible.has(hour)
+              ? 'hot_available_visible'
+              : 'derived_free';
         }
 
         out.push({
