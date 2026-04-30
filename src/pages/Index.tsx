@@ -83,7 +83,7 @@ const Index = () => {
   return (
     <div className="relative min-h-screen">
       <div className="absolute inset-0 grid-bg pointer-events-none" aria-hidden />
-      <main className="relative mx-auto max-w-4xl px-5 py-10 md:py-14">
+      <main className="relative mx-auto max-w-4xl px-3 sm:px-5 py-6 sm:py-10 md:py-14">
         {/* Header */}
         <header className="flex flex-col gap-4">
           <div className="inline-flex items-center gap-2 rounded-full border border-clay/40 bg-clay/10 px-3 py-1 text-xs text-clay-foreground/90 font-mono-display w-fit">
@@ -104,7 +104,7 @@ const Index = () => {
                   ? "мониторинг активен • интервал 60с"
                   : "ожидание первой проверки…"}
           </div>
-          <h1 className="font-mono-display text-4xl md:text-5xl font-semibold tracking-tight">
+          <h1 className="font-mono-display text-3xl sm:text-4xl md:text-5xl font-semibold tracking-tight break-words">
             <span className="text-primary glow-text">kort40</span>
             <span className="text-muted-foreground">_</span>
             <span className="text-foreground">watch</span>
@@ -148,7 +148,7 @@ const Index = () => {
         )}
 
         {/* Stats */}
-        <section className="mt-8 grid grid-cols-3 gap-3">
+        <section className="mt-6 sm:mt-8 grid grid-cols-3 gap-2 sm:gap-3">
           <StatCard
             icon={<Activity className="size-4" />}
             label="свободно"
@@ -179,7 +179,7 @@ const Index = () => {
         </section>
 
         {/* Telegram channel info */}
-        <Card className="mt-6 p-5 bg-card/60 backdrop-blur">
+        <Card className="mt-6 p-4 sm:p-5 bg-card/60 backdrop-blur">
           <div className="flex items-center gap-2 mb-2">
             <Lock className="size-4 text-primary" />
             <h2 className="font-mono-display font-medium text-sm">Общий Telegram-чат</h2>
@@ -198,9 +198,9 @@ const Index = () => {
         </Card>
 
         {/* Tabs: calendar / history / settings */}
-        <section className="mt-8">
+        <section className="mt-6 sm:mt-8">
           <Tabs defaultValue="calendar" className="w-full">
-            <TabsList className="grid grid-cols-3 w-full max-w-md bg-card/60 backdrop-blur">
+            <TabsList className="grid grid-cols-3 w-full sm:max-w-md bg-card/60 backdrop-blur">
               <TabsTrigger value="calendar" className="gap-1.5 font-mono-display text-xs">
                 <CalendarDays className="size-3.5" />
                 Календарь
@@ -256,12 +256,12 @@ function StatCard({
         ? "text-destructive"
         : "text-primary";
   return (
-    <Card className="p-4 bg-card/60 backdrop-blur">
+    <Card className="p-3 sm:p-4 bg-card/60 backdrop-blur">
       <div className="flex items-center gap-2 text-[11px] text-muted-foreground font-mono-display uppercase tracking-wider">
         <span className={color}>{icon}</span>
-        {label}
+        <span className="truncate">{label}</span>
       </div>
-      <div className={`mt-2 font-mono-display text-2xl md:text-3xl font-semibold ${color} truncate`}>
+      <div className={`mt-2 font-mono-display text-xl sm:text-2xl md:text-3xl font-semibold ${color} truncate`}>
         {value}
       </div>
     </Card>

@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { RefreshCw, Trash2, Trophy, Lock } from "lucide-react";
+import { Trash2, Trophy, Lock } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { ru } from "date-fns/locale";
 
@@ -32,7 +32,6 @@ interface Props {
 export function KortConfigCard({ site }: Props) {
   const [label, setLabel] = useState(site?.label ?? "");
   const [saving, setSaving] = useState(false);
-  const [checking, setChecking] = useState(false);
 
   const isActive = site?.is_active ?? false;
   const isError = site?.last_status?.startsWith("error");
@@ -86,22 +85,6 @@ export function KortConfigCard({ site }: Props) {
     if (error) toast.error(error.message);
   }
 
-  async function checkNow() {
-    if (!site) return;
-    setChecking(true);
-    try {
-      const { error } = await supabase.functions.invoke("check-sites", {
-        body: { site_id: site.id },
-      });
-      if (error) throw error;
-      toast.success("Проверка выполнена");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Ошибка проверки");
-    } finally {
-      setChecking(false);
-    }
-  }
-
   async function stopAndRemove() {
     if (!site) return;
     if (!confirm("Остановить мониторинг и удалить настройку?")) return;
@@ -113,7 +96,7 @@ export function KortConfigCard({ site }: Props) {
   // ===== Setup state (no monitor yet) =====
   if (!site) {
     return (
-      <Card className="p-6 bg-card/70 backdrop-blur border-clay/40">
+    <Card className="p-4 sm:p-6 bg-card/70 backdrop-blur border-clay/40">
         <div className="flex items-center gap-2 mb-1">
           <Trophy className="size-4 text-primary" />
           <h2 className="font-mono-display font-medium">Запустить мониторинг</h2>
@@ -152,7 +135,7 @@ export function KortConfigCard({ site }: Props) {
 
   // ===== Active monitor =====
   return (
-    <Card className="p-6 bg-card/70 backdrop-blur border-clay/40">
+    <Card className="p-4 sm:p-6 bg-card/70 backdrop-blur border-clay/40">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -187,11 +170,11 @@ export function KortConfigCard({ site }: Props) {
       </div>
 
       {/* Slot counter — hero number */}
-      <div className="mt-6 court-lines rounded-lg p-6 text-center">
+      <div className="mt-6 court-lines rounded-lg p-4 sm:p-6 text-center">
         <div className="text-[11px] uppercase tracking-widest text-clay-foreground/80 font-mono-display">
           свободных слотов сейчас
         </div>
-        <div className="mt-1 font-mono-display text-6xl font-semibold text-primary glow-text leading-none">
+        <div className="mt-1 font-mono-display text-5xl sm:text-6xl font-semibold text-primary glow-text leading-none">
           {slotsCount ?? "—"}
         </div>
         <div className="mt-2 text-[11px] text-muted-foreground font-mono-display">
@@ -245,10 +228,6 @@ export function KortConfigCard({ site }: Props) {
       <div className="mt-5 flex flex-wrap gap-2">
         <Button size="sm" onClick={saveSettings} disabled={saving}>
           {saving ? "Сохранение…" : "Сохранить"}
-        </Button>
-        <Button size="sm" variant="secondary" onClick={checkNow} disabled={checking} className="gap-1.5">
-          <RefreshCw className={`size-3.5 ${checking ? "animate-spin" : ""}`} />
-          Проверить сейчас
         </Button>
         <Button
           size="sm"
