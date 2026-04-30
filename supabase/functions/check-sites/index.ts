@@ -88,45 +88,128 @@ const KORT40_BASE = 'https://kort40.online';
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
 
-async function kort40Login(email: string, password: string): Promise<CookieJar> {
+/**
+ * Result of attempting to obtain a kort40 session.
+ * status:
+ *  - 'ok'      — got a working session
+ *  - 'closed'  — site responded but bookings appear closed (no API / non-JSON / specific 4xx)
+ *  - 'error'   — network/credential failure we should surface
+ */
+type LoginResult =
+  | { status: 'ok'; jar: CookieJar; freshLogin: boolean }
+  | { status: 'closed'; reason: string }
+  | { status: 'error'; reason: string };
+
+async function kort40FreshLogin(email: string, password: string): Promise<LoginResult> {
   const jar: CookieJar = {};
 
-  // Step 1: get csrftoken cookie
-  const r1 = await fetch(`${KORT40_BASE}/`, {
-    headers: { 'User-Agent': UA, Accept: 'text/html' },
-  });
-  await r1.text();
+  // Step 1: warm up to get csrftoken
+  let r1: Response;
+  try {
+    r1 = await fetch(`${KORT40_BASE}/`, {
+      headers: { 'User-Agent': UA, Accept: 'text/html', 'Accept-Language': 'ru,en;q=0.7' },
+    });
+  } catch (e) {
+    return { status: 'error', reason: `network: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  const homeBody = await r1.text();
   parseSetCookie(r1.headers, jar);
 
   if (!jar.csrftoken) {
-    throw new Error('kort40: csrftoken cookie not received');
+    // Some seasonal landing pages drop the API entirely — treat as closed
+    if (/season|сезон|закрыт|closed/i.test(homeBody)) {
+      return { status: 'closed', reason: 'no csrftoken; landing looks like off-season page' };
+    }
+    return { status: 'closed', reason: 'no csrftoken cookie' };
   }
 
-  // Try common login endpoints — kort40 uses Django REST.
   const loginPaths = ['/api/login/', '/api/auth/login/', '/api/sign-in/'];
   let lastErr = '';
   for (const path of loginPaths) {
-    const res = await fetch(`${KORT40_BASE}${path}`, {
-      method: 'POST',
-      headers: {
-        'User-Agent': UA,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Referer: `${KORT40_BASE}/login`,
-        Origin: KORT40_BASE,
-        Cookie: jarToHeader(jar),
-        'X-CSRFToken': jar.csrftoken,
-      },
-      body: JSON.stringify({ email, password }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${KORT40_BASE}${path}`, {
+        method: 'POST',
+        headers: {
+          'User-Agent': UA,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'Accept-Language': 'ru,en;q=0.7',
+          Referer: `${KORT40_BASE}/login`,
+          Origin: KORT40_BASE,
+          Cookie: jarToHeader(jar),
+          'X-CSRFToken': jar.csrftoken,
+        },
+        body: JSON.stringify({ email, password }),
+      });
+    } catch (e) {
+      lastErr = `${path} network: ${e instanceof Error ? e.message : String(e)}`;
+      continue;
+    }
     parseSetCookie(res.headers, jar);
     const body = await res.text();
     if (res.ok && jar.sessionid) {
-      return jar;
+      return { status: 'ok', jar, freshLogin: true };
     }
+    // 404 on every login path → API not deployed for this season
     lastErr = `${path} -> ${res.status} ${body.slice(0, 200)}`;
+    if (res.status === 401 || res.status === 403) {
+      // Wrong credentials — surface immediately
+      return { status: 'error', reason: `auth ${res.status} on ${path}: ${body.slice(0, 200)}` };
+    }
   }
-  throw new Error(`kort40: login failed. ${lastErr}`);
+
+  // None of the login endpoints worked, but we did get csrftoken — treat as closed/seasonal
+  return { status: 'closed', reason: `login endpoints unavailable: ${lastErr}` };
+}
+
+async function getKort40Session(supabase: any, site: any): Promise<LoginResult> {
+  const email = Deno.env.get('KORT40_EMAIL');
+  const password = Deno.env.get('KORT40_PASSWORD');
+  if (!email || !password) {
+    return { status: 'error', reason: 'KORT40_EMAIL / KORT40_PASSWORD не настроены' };
+  }
+
+  // Try to reuse cached session
+  const { data: cached } = await supabase
+    .from('kort_session')
+    .select('csrftoken,sessionid,expires_at')
+    .eq('site_id', site.id)
+    .maybeSingle();
+
+  const stillValid =
+    cached?.sessionid &&
+    cached?.csrftoken &&
+    (!cached.expires_at || new Date(cached.expires_at).getTime() > Date.now() + 30_000);
+
+  if (stillValid) {
+    return {
+      status: 'ok',
+      jar: { csrftoken: cached.csrftoken, sessionid: cached.sessionid },
+      freshLogin: false,
+    };
+  }
+
+  const fresh = await kort40FreshLogin(email, password);
+  if (fresh.status === 'ok') {
+    // Cache for 6 hours
+    const expiresAt = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+    await supabase
+      .from('kort_session')
+      .upsert(
+        {
+          site_id: site.id,
+          csrftoken: fresh.jar.csrftoken,
+          sessionid: fresh.jar.sessionid,
+          expires_at: expiresAt,
+        },
+        { onConflict: 'site_id' },
+      );
+  } else {
+    // Drop any stale cached session
+    await supabase.from('kort_session').delete().eq('site_id', site.id);
+  }
+  return fresh;
 }
 
 async function kort40FetchSlots(jar: CookieJar, date: string): Promise<unknown> {
@@ -144,12 +227,19 @@ async function kort40FetchSlots(jar: CookieJar, date: string): Promise<unknown> 
   );
   const text = await res.text();
   if (!res.ok) {
+    // Mark auth issues so caller can invalidate session
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`AUTH_${res.status}`);
+    }
+    if (res.status === 404 || res.status === 503) {
+      throw new Error(`CLOSED_${res.status}`);
+    }
     throw new Error(`get-available-times ${date} -> ${res.status}: ${text.slice(0, 200)}`);
   }
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(`get-available-times ${date}: not JSON`);
+    throw new Error(`CLOSED_HTML`); // got HTML instead of JSON — typical "season closed"
   }
 }
 
