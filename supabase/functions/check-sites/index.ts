@@ -55,10 +55,11 @@ async function sendTelegram(_chatId: string | null | undefined, text: string) {
   for (let i = 0; i < chunks.length; i++) {
     const part = chunks.length > 1 ? `${chunks[i]}\n\n<i>(${i + 1}/${chunks.length})</i>` : chunks[i];
     // Retry transient failures (5xx from gateway/Telegram, network errors, 429 without retry_after)
-    const MAX_ATTEMPTS = 3;
+    const MAX_ATTEMPTS = 6;
     let data: unknown = null;
     let attempt = 0;
     let delivered = false;
+    let chatIdToUse: string | number = TELEGRAM_CHAT_ID;
     while (attempt < MAX_ATTEMPTS && !delivered) {
       attempt++;
       let res: Response | null = null;
@@ -72,7 +73,7 @@ async function sendTelegram(_chatId: string | null | undefined, text: string) {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            chat_id: TELEGRAM_CHAT_ID,
+            chat_id: chatIdToUse,
             text: part,
             parse_mode: 'HTML',
             disable_web_page_preview: true,
@@ -85,7 +86,7 @@ async function sendTelegram(_chatId: string | null | undefined, text: string) {
       if (!res) {
         // network / fetch failure
         if (attempt < MAX_ATTEMPTS) {
-          await new Promise((r) => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
+          await new Promise((r) => setTimeout(r, Math.min(15_000, 1000 * Math.pow(2, attempt - 1))));
           continue;
         }
         throw new Error(`Telegram network error: ${networkErr instanceof Error ? networkErr.message : String(networkErr)}`);
@@ -105,10 +106,21 @@ async function sendTelegram(_chatId: string | null | undefined, text: string) {
         continue;
       }
 
+      // Auto-handle group → supergroup migration: Telegram returns 400 with parameters.migrate_to_chat_id
+      const migrateTo = (data as any)?.parameters?.migrate_to_chat_id;
+      if (res.status === 400 && typeof migrateTo === 'number') {
+        chatIdToUse = migrateTo;
+        attempt--; // retry immediately with new chat id, don't count
+        continue;
+      }
+
       // Retry on transient errors: 5xx (incl. 502 upstream_request_failed) and 429
       const isTransient = res.status >= 500 || res.status === 429 || res.status === 408;
       if (isTransient && attempt < MAX_ATTEMPTS) {
-        await new Promise((r) => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
+        // Exponential backoff with jitter, capped at 15s
+        const base = Math.min(15_000, 1000 * Math.pow(2, attempt - 1));
+        const jitter = Math.floor(Math.random() * 500);
+        await new Promise((r) => setTimeout(r, base + jitter));
         continue;
       }
 
