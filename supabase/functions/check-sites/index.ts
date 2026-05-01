@@ -7,6 +7,77 @@ const corsHeaders = {
 
 const GATEWAY_URL = 'https://connector-gateway.lovable.dev/telegram';
 
+// Maximum attempts before we give up retrying a queued message.
+// Each check runs once per minute, so 60 attempts ≈ 1 hour of retrying.
+const MAX_QUEUE_ATTEMPTS = 60;
+
+/**
+ * Queue a Telegram message for later retry. Used when sendTelegram throws
+ * (gateway 502, network errors, etc.) so the notification is not lost.
+ */
+async function enqueuePendingTelegram(
+  supabase: ReturnType<typeof createClient>,
+  text: string,
+  errorMsg: string,
+) {
+  try {
+    await supabase.from('pending_telegram_messages').insert({
+      text,
+      attempts: 1,
+      last_error: errorMsg.slice(0, 500),
+      // first retry in ~1 minute (next check tick)
+      next_attempt_at: new Date(Date.now() + 60_000).toISOString(),
+    });
+  } catch (e) {
+    console.error('failed to enqueue pending telegram message:', e);
+  }
+}
+
+/**
+ * Drain the pending Telegram queue. Called at the start of every check run.
+ * On success: row deleted. On failure: attempts++, exponential backoff for next retry.
+ */
+async function flushPendingTelegram(supabase: ReturnType<typeof createClient>) {
+  const nowIso = new Date().toISOString();
+  const { data: pending, error } = await supabase
+    .from('pending_telegram_messages')
+    .select('id, text, attempts')
+    .lte('next_attempt_at', nowIso)
+    .order('created_at', { ascending: true })
+    .limit(20);
+  if (error || !pending || pending.length === 0) return;
+
+  for (const row of pending as Array<{ id: string; text: string; attempts: number }>) {
+    try {
+      await sendTelegram(null, row.text);
+      await supabase.from('pending_telegram_messages').delete().eq('id', row.id);
+      console.log(`flushed pending telegram message ${row.id} (was attempt #${row.attempts})`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const nextAttempts = row.attempts + 1;
+      if (nextAttempts >= MAX_QUEUE_ATTEMPTS) {
+        // Give up: drop from queue and log a permanent error.
+        await supabase.from('pending_telegram_messages').delete().eq('id', row.id);
+        console.error(`giving up on pending telegram message ${row.id} after ${nextAttempts} attempts: ${msg}`);
+      } else {
+        // Backoff: 1, 2, 4, ..., capped at 10 minutes.
+        const backoffMs = Math.min(10 * 60_000, 60_000 * Math.pow(2, nextAttempts - 1));
+        await supabase
+          .from('pending_telegram_messages')
+          .update({
+            attempts: nextAttempts,
+            last_error: msg.slice(0, 500),
+            next_attempt_at: new Date(Date.now() + backoffMs).toISOString(),
+          })
+          .eq('id', row.id);
+      }
+      // Stop after first failure this run — gateway is likely still down,
+      // no point hammering it with the rest of the queue.
+      break;
+    }
+  }
+}
+
 async function sha256(text: string): Promise<string> {
   const buf = new TextEncoder().encode(text);
   const hashBuf = await crypto.subtle.digest('SHA-256', buf);
@@ -1051,10 +1122,12 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     try {
       await sendTelegram(site.telegram_chat_id, text);
     } catch (tgErr) {
+      const msg = tgErr instanceof Error ? tgErr.message : String(tgErr);
+      await enqueuePendingTelegram(supabase, text, msg);
       await supabase.from('change_history').insert({
         site_id: site.id,
         event_type: 'error',
-        message: `Telegram: ${tgErr instanceof Error ? tgErr.message : String(tgErr)}`,
+        message: `Telegram: ${msg} — поставлено в очередь повторов`,
       });
     }
     console.log('kort40 first-open sample:', JSON.stringify(firstRawSample).slice(0, 1500));
@@ -1080,10 +1153,12 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     try {
       await sendTelegram(site.telegram_chat_id, text);
     } catch (tgErr) {
+      const msg = tgErr instanceof Error ? tgErr.message : String(tgErr);
+      await enqueuePendingTelegram(supabase, text, msg);
       await supabase.from('change_history').insert({
         site_id: site.id,
         event_type: 'error',
-        message: `Telegram: ${tgErr instanceof Error ? tgErr.message : String(tgErr)}`,
+        message: `Telegram: ${msg} — поставлено в очередь повторов`,
       });
     }
   } else if (newSlots.length > 0) {
@@ -1121,6 +1196,14 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const supabase = createClient(supabaseUrl, serviceKey);
+
+  // Try to deliver any messages that previously failed (e.g. gateway 502).
+  // Runs before normal checks so retries happen on every cron tick.
+  try {
+    await flushPendingTelegram(supabase);
+  } catch (e) {
+    console.error('flushPendingTelegram failed:', e);
+  }
 
   // Diagnose mode: return raw kort40 responses for the configured account
   // so we can see exactly what the site says about THIS user.
@@ -1269,10 +1352,11 @@ Deno.serve(async (req) => {
           await sendTelegram(site.telegram_chat_id, text);
         } catch (tgErr) {
           const msg = tgErr instanceof Error ? tgErr.message : String(tgErr);
+          await enqueuePendingTelegram(supabase, text, msg);
           await supabase.from('change_history').insert({
             site_id: site.id,
             event_type: 'error',
-            message: `Telegram: ${msg}`,
+            message: `Telegram: ${msg} — поставлено в очередь повторов`,
           });
         }
         results.push({ id: site.id, status: 'changed', changed: true });

@@ -207,6 +207,36 @@ export type Database = {
         }
         Relationships: []
       }
+      pending_telegram_messages: {
+        Row: {
+          attempts: number
+          created_at: string
+          id: string
+          last_error: string | null
+          next_attempt_at: string
+          text: string
+          updated_at: string
+        }
+        Insert: {
+          attempts?: number
+          created_at?: string
+          id?: string
+          last_error?: string | null
+          next_attempt_at?: string
+          text: string
+          updated_at?: string
+        }
+        Update: {
+          attempts?: number
+          created_at?: string
+          id?: string
+          last_error?: string | null
+          next_attempt_at?: string
+          text?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       watched_sites: {
         Row: {
           consecutive_errors: number
