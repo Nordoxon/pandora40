@@ -1344,10 +1344,11 @@ Deno.serve(async (req) => {
           await sendTelegram(site.telegram_chat_id, text);
         } catch (tgErr) {
           const msg = tgErr instanceof Error ? tgErr.message : String(tgErr);
+          await enqueuePendingTelegram(supabase, text, msg);
           await supabase.from('change_history').insert({
             site_id: site.id,
             event_type: 'error',
-            message: `Telegram: ${msg}`,
+            message: `Telegram: ${msg} — поставлено в очередь повторов`,
           });
         }
         results.push({ id: site.id, status: 'changed', changed: true });
