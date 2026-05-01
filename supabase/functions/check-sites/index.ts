@@ -1145,10 +1145,11 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
 
   if (freedSlots.length > 0) {
     const text = buildSlotsList(freedSlots, '🎾 <b>Освободились корты на kort40.online</b>\n<i>(кто-то отменил бронь)</i>');
+    const summary = summarizeFreedSlots(freedSlots);
     await supabase.from('change_history').insert({
       site_id: site.id,
       event_type: 'change',
-      message: `Освободилось ${freedSlots.length} слотов после отмены брони`,
+      message: `Освободилось ${freedSlots.length} ${pluralSlots(freedSlots.length)} после отмены брони: ${summary}`,
     });
     try {
       await sendTelegram(site.telegram_chat_id, text);
@@ -1163,10 +1164,11 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     }
   } else if (newSlots.length > 0) {
     // First-time sightings — record silently in history, no Telegram spam.
+    const summary = summarizeFreedSlots(newSlots);
     await supabase.from('change_history').insert({
       site_id: site.id,
       event_type: 'baseline',
-      message: `Зарегистрировано ${newSlots.length} новых свободных слотов (без уведомления — впервые видим)`,
+      message: `Зарегистрировано ${newSlots.length} новых свободных ${pluralSlots(newSlots.length)} (без уведомления — впервые видим): ${summary}`,
     });
   }
 
