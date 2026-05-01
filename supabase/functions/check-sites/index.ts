@@ -1197,6 +1197,14 @@ Deno.serve(async (req) => {
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const supabase = createClient(supabaseUrl, serviceKey);
 
+  // Try to deliver any messages that previously failed (e.g. gateway 502).
+  // Runs before normal checks so retries happen on every cron tick.
+  try {
+    await flushPendingTelegram(supabase);
+  } catch (e) {
+    console.error('flushPendingTelegram failed:', e);
+  }
+
   // Diagnose mode: return raw kort40 responses for the configured account
   // so we can see exactly what the site says about THIS user.
   const url = new URL(req.url);
