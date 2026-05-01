@@ -801,6 +801,53 @@ function buildSlotsList(slots: NormalizedSlot[], header: string): string {
   return lines.join('\n');
 }
 
+function pluralSlots(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'слот';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'слота';
+  return 'слотов';
+}
+
+/**
+ * Build a compact human-readable summary of which slots opened up,
+ * for storing in change_history.message. Example:
+ *   "9 мая 19:00–20:00, 21:00–22:00; 10 мая 14:00–15:00 (Корт 1)"
+ * Truncates if there are too many entries.
+ */
+function summarizeFreedSlots(slots: NormalizedSlot[]): string {
+  if (slots.length === 0) return '';
+  const byDate = new Map<string, NormalizedSlot[]>();
+  for (const s of slots) {
+    if (!byDate.has(s.date)) byDate.set(s.date, []);
+    byDate.get(s.date)!.push(s);
+  }
+  const dateKeys = [...byDate.keys()].sort();
+  const MAX_DAYS = 5;
+  const MAX_TIMES_PER_DAY = 6;
+  // Detect single-court vs multi-court to decide whether to append court name
+  const courtSet = new Set(slots.map((s) => s.court));
+  const showCourt = courtSet.size > 1;
+
+  const dayParts: string[] = [];
+  for (const d of dateKeys.slice(0, MAX_DAYS)) {
+    const list = byDate.get(d)!.sort((a, b) => a.startTime.localeCompare(b.startTime));
+    const times = list.slice(0, MAX_TIMES_PER_DAY).map((s) => {
+      const t = s.endTime ? `${s.startTime}–${s.endTime}` : s.startTime;
+      return showCourt ? `${t} (${s.court})` : t;
+    });
+    if (list.length > MAX_TIMES_PER_DAY) {
+      times.push(`…ещё ${list.length - MAX_TIMES_PER_DAY}`);
+    }
+    dayParts.push(`${formatDateRu(d)} ${times.join(', ')}`);
+  }
+  let result = dayParts.join('; ');
+  if (dateKeys.length > MAX_DAYS) {
+    result += `; …ещё ${dateKeys.length - MAX_DAYS} дн.`;
+  }
+  return result;
+}
+
 async function markSeasonClosed(supabase: any, site: any, reason: string) {
   const wasOpen = site.season_status === 'open';
   const nextCheck = new Date(Date.now() + CLOSED_BACKOFF_MS).toISOString();
