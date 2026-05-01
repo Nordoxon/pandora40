@@ -1122,10 +1122,12 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     try {
       await sendTelegram(site.telegram_chat_id, text);
     } catch (tgErr) {
+      const msg = tgErr instanceof Error ? tgErr.message : String(tgErr);
+      await enqueuePendingTelegram(supabase, text, msg);
       await supabase.from('change_history').insert({
         site_id: site.id,
         event_type: 'error',
-        message: `Telegram: ${tgErr instanceof Error ? tgErr.message : String(tgErr)}`,
+        message: `Telegram: ${msg} — поставлено в очередь повторов`,
       });
     }
     console.log('kort40 first-open sample:', JSON.stringify(firstRawSample).slice(0, 1500));
@@ -1151,10 +1153,12 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     try {
       await sendTelegram(site.telegram_chat_id, text);
     } catch (tgErr) {
+      const msg = tgErr instanceof Error ? tgErr.message : String(tgErr);
+      await enqueuePendingTelegram(supabase, text, msg);
       await supabase.from('change_history').insert({
         site_id: site.id,
         event_type: 'error',
-        message: `Telegram: ${tgErr instanceof Error ? tgErr.message : String(tgErr)}`,
+        message: `Telegram: ${msg} — поставлено в очередь повторов`,
       });
     }
   } else if (newSlots.length > 0) {
