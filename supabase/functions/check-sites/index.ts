@@ -260,13 +260,22 @@ const KORT40_TIMEZONE_OFFSET_HOURS = 3;
 const KORT40_DAY_START_HOUR = 6;
 const KORT40_DAY_END_HOUR = 23;
 
-// kort40 already returns hours in Moscow local time, matching what the user
-// sees on the booking circle UI. We previously applied a +3 shift here, which
-// caused a systematic 3-hour misalignment between our classification and the
-// real site (e.g. `reserved=[14]` was being treated as a busy slot at 17:00,
-// while on the site it was a busy slot at 14:00 and 17:00 was actually a free
-// `hot_available` slot). Treat the values as-is.
-function shiftKort40Hour(hour: number): number {
+// kort40 hour numbering, empirically determined by comparing the API payload
+// to the live site UI for 2026-05-02 (16:30 MSK):
+//   API:  available_hours=[6..12, 21,22,23], reserved=[13,14,15,16,18,19,20], hot_available=[17]
+//   UI:   only 17–18 (orange) and 20–21 (green) are bookable for the rest of the day.
+// This means:
+//   • `available_hours` and `reserved` use the END hour of the slot (e.g. 21 ⇒ 20–21).
+//   • `hot_available` uses the START hour of the slot (e.g. 17 ⇒ 17–18).
+// We normalise everything to START hour, which matches our DB schema
+// (`start_time = '17:00'` for the 17–18 slot).
+function endHourToStart(hour: number): number {
+  // 21 (end) → 20 (start); 0 (end, i.e. midnight) → 23 (start)
+  return (hour + 23) % 24;
+}
+
+// `hot_available` is already in start-hour form — no conversion needed.
+function hotHourToStart(hour: number): number {
   return hour;
 }
 
