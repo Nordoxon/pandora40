@@ -411,34 +411,50 @@ async function getKort40Session(supabase: any, site: any): Promise<LoginResult> 
 }
 
 async function kort40FetchSlots(jar: CookieJar, date: string): Promise<unknown> {
-  const res = await fetch(
-    `${KORT40_BASE}/api/get-available-times/?date=${date}`,
-    {
-      headers: {
-        'User-Agent': UA,
-        Accept: 'application/json',
-        Referer: `${KORT40_BASE}/`,
-        Cookie: jarToHeader(jar),
-        'X-CSRFToken': jar.csrftoken ?? '',
+  // Retry on 429 with exponential backoff — kort40 has aggressive rate limiting.
+  const MAX_ATTEMPTS = 4;
+  let lastStatus = 0;
+  let lastBody = '';
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const res = await fetch(
+      `${KORT40_BASE}/api/get-available-times/?date=${date}`,
+      {
+        headers: {
+          'User-Agent': UA,
+          Accept: 'application/json',
+          Referer: `${KORT40_BASE}/`,
+          Cookie: jarToHeader(jar),
+          'X-CSRFToken': jar.csrftoken ?? '',
+        },
       },
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    // Mark auth issues so caller can invalidate session
+    );
+    const text = await res.text();
+    if (res.ok) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error(`CLOSED_HTML`);
+      }
+    }
+    lastStatus = res.status;
+    lastBody = text;
     if (res.status === 401 || res.status === 403) {
       throw new Error(`AUTH_${res.status}`);
     }
     if (res.status === 404 || res.status === 503) {
       throw new Error(`CLOSED_${res.status}`);
     }
-    throw new Error(`get-available-times ${date} -> ${res.status}: ${text.slice(0, 200)}`);
+    // Retry on 429 / 5xx with backoff and jitter.
+    const isTransient = res.status === 429 || res.status >= 500;
+    if (isTransient && attempt < MAX_ATTEMPTS) {
+      const base = Math.min(8000, 800 * Math.pow(2, attempt - 1));
+      const jitter = Math.floor(Math.random() * 400);
+      await new Promise((r) => setTimeout(r, base + jitter));
+      continue;
+    }
+    break;
   }
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(`CLOSED_HTML`); // got HTML instead of JSON — typical "season closed"
-  }
+  throw new Error(`get-available-times ${date} -> ${lastStatus}: ${lastBody.slice(0, 200)}`);
 }
 
 /** Fetch logged-in user profile — used to diagnose account-specific blocks. */
