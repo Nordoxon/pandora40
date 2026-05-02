@@ -411,34 +411,50 @@ async function getKort40Session(supabase: any, site: any): Promise<LoginResult> 
 }
 
 async function kort40FetchSlots(jar: CookieJar, date: string): Promise<unknown> {
-  const res = await fetch(
-    `${KORT40_BASE}/api/get-available-times/?date=${date}`,
-    {
-      headers: {
-        'User-Agent': UA,
-        Accept: 'application/json',
-        Referer: `${KORT40_BASE}/`,
-        Cookie: jarToHeader(jar),
-        'X-CSRFToken': jar.csrftoken ?? '',
+  // Retry on 429 with exponential backoff — kort40 has aggressive rate limiting.
+  const MAX_ATTEMPTS = 4;
+  let lastStatus = 0;
+  let lastBody = '';
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const res = await fetch(
+      `${KORT40_BASE}/api/get-available-times/?date=${date}`,
+      {
+        headers: {
+          'User-Agent': UA,
+          Accept: 'application/json',
+          Referer: `${KORT40_BASE}/`,
+          Cookie: jarToHeader(jar),
+          'X-CSRFToken': jar.csrftoken ?? '',
+        },
       },
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    // Mark auth issues so caller can invalidate session
+    );
+    const text = await res.text();
+    if (res.ok) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error(`CLOSED_HTML`);
+      }
+    }
+    lastStatus = res.status;
+    lastBody = text;
     if (res.status === 401 || res.status === 403) {
       throw new Error(`AUTH_${res.status}`);
     }
     if (res.status === 404 || res.status === 503) {
       throw new Error(`CLOSED_${res.status}`);
     }
-    throw new Error(`get-available-times ${date} -> ${res.status}: ${text.slice(0, 200)}`);
+    // Retry on 429 / 5xx with backoff and jitter.
+    const isTransient = res.status === 429 || res.status >= 500;
+    if (isTransient && attempt < MAX_ATTEMPTS) {
+      const base = Math.min(8000, 800 * Math.pow(2, attempt - 1));
+      const jitter = Math.floor(Math.random() * 400);
+      await new Promise((r) => setTimeout(r, base + jitter));
+      continue;
+    }
+    break;
   }
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(`CLOSED_HTML`); // got HTML instead of JSON — typical "season closed"
-  }
+  throw new Error(`get-available-times ${date} -> ${lastStatus}: ${lastBody.slice(0, 200)}`);
 }
 
 /** Fetch logged-in user profile — used to diagnose account-specific blocks. */
@@ -909,8 +925,9 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   let okResponses = 0;
   let detailMessage: string | null = null;
 
-  // Smaller batch + tiny delay → friendlier to the server
-  const batchSize = 3;
+  // Smaller batch + tiny delay → friendlier to the server.
+  // kort40 starts returning 429 with parallelism > 2, so keep it conservative.
+  const batchSize = 2;
 
   async function runBatch(batchDates: string[]) {
     const results = await Promise.allSettled(batchDates.map((d) => kort40FetchSlots(jar, d)));
@@ -997,7 +1014,7 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     }
 
     // tiny delay between batches
-    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 200));
+    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 350));
   }
 
   // 3) If majority of probes say "closed", treat the whole site as closed
@@ -1046,6 +1063,35 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       `unknown=${auditCounts.unknown} ` +
       `total=${allClassified.length}`,
   );
+
+  // 3b) If ANY date failed to fetch (429, network, etc.), the snapshot is partial.
+  // Using it for diff would falsely flag dropped-then-recovered slots as "freed".
+  // Skip baseline + diff + snapshot replacement; just record the error and retry next tick.
+  if (errors.length > 0) {
+    await supabase
+      .from('watched_sites')
+      .update({
+        last_checked_at: new Date().toISOString(),
+        last_status:
+          `partial: ${errors.length} errors • snapshot skipped • ` +
+          `free=${auditCounts.available} busy=${auditCounts.busy}`,
+        // do NOT change current_hash / season_status — keep previous baseline intact
+        next_check_at: new Date(Date.now() + OPEN_INTERVAL_MS).toISOString(),
+      })
+      .eq('id', site.id);
+    await supabase.from('change_history').insert({
+      site_id: site.id,
+      event_type: 'error',
+      message:
+        `Частичная проверка: ${errors.length} запрос(ов) не прошли — снапшот не обновлён, повтор на следующей минуте. ` +
+        `Первая ошибка: ${errors[0].slice(0, 200)}`,
+    });
+    return {
+      status: 'partial' as const,
+      errors: errors.length,
+      okResponses,
+    };
+  }
 
   // 4) Site is OPEN — diff slots vs previous snapshot
   const { data: prevSlots, error: prevErr } = await supabase
