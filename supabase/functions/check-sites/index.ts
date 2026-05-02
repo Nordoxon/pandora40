@@ -291,6 +291,12 @@ function formatHourRange(hour: number): { start: string; end: string } {
   };
 }
 
+function addDaysToYmd(date: string, days: number): string {
+  const base = new Date(`${date}T00:00:00.000Z`);
+  base.setUTCDate(base.getUTCDate() + days);
+  return base.toISOString().slice(0, 10);
+}
+
 /**
  * Result of attempting to obtain a kort40 session.
  * status:
@@ -547,9 +553,48 @@ async function kort40FetchClassifiedDay(
   date: string,
 ): Promise<{ classified: ClassifiedSlot[]; raw: unknown }> {
   const timesRaw = (await kort40FetchSlots(jar, date)) as Record<string, unknown>;
+  const classified = extractClassifiedSlots(timesRaw, date);
+
+  const availableHours = classified
+    .filter((slot) => slot.classification === 'available' && /^\d{2}:\d{2}$/.test(slot.startTime))
+    .map((slot) => Number(slot.startTime.slice(0, 2)))
+    .filter((hour) => Number.isFinite(hour));
+
+  const verifiedBusyByHour = new Map<number, string[]>();
+  const verificationDate = addDaysToYmd(date, 1);
+  for (let i = 0; i < availableHours.length; i++) {
+    const hour = availableHours[i];
+    const status = await kort40FetchCourtsStatus(jar, verificationDate, hour);
+    verifiedBusyByHour.set(hour, status.busy_courts);
+    if (i + 1 < availableHours.length) {
+      await new Promise((r) => setTimeout(r, 180));
+    }
+  }
+
   return {
     raw: timesRaw,
-    classified: extractClassifiedSlots(timesRaw, date),
+    classified: classified.map((slot) => {
+      if (slot.classification !== 'available' || !/^\d{2}:\d{2}$/.test(slot.startTime)) {
+        return slot;
+      }
+
+      const hour = Number(slot.startTime.slice(0, 2));
+      const busyCourts = verifiedBusyByHour.get(hour);
+      if (!busyCourts) return slot;
+
+      const bothBusy = busyCourts.length >= 2;
+      return {
+        ...slot,
+        classification: bothBusy ? 'busy' as const : 'available' as const,
+        reason: bothBusy ? 'verified_busy_by_courts_status' : 'verified_available_by_courts_status',
+        raw: {
+          ...(slot.raw && typeof slot.raw === 'object' ? slot.raw as Record<string, unknown> : {}),
+          verified_by: 'get_courts_status',
+          verification_date: verificationDate,
+          busy_courts: busyCourts,
+        },
+      };
+    }),
   };
 }
 
