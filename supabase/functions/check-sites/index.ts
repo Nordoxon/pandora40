@@ -260,8 +260,14 @@ const KORT40_TIMEZONE_OFFSET_HOURS = 3;
 const KORT40_DAY_START_HOUR = 6;
 const KORT40_DAY_END_HOUR = 23;
 
+// kort40 already returns hours in Moscow local time, matching what the user
+// sees on the booking circle UI. We previously applied a +3 shift here, which
+// caused a systematic 3-hour misalignment between our classification and the
+// real site (e.g. `reserved=[14]` was being treated as a busy slot at 17:00,
+// while on the site it was a busy slot at 14:00 and 17:00 was actually a free
+// `hot_available` slot). Treat the values as-is.
 function shiftKort40Hour(hour: number): number {
-  return (hour + KORT40_TIMEZONE_OFFSET_HOURS + 24) % 24;
+  return hour;
 }
 
 function isKort40VisibleHour(hour: number): boolean {
