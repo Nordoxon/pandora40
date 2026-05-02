@@ -463,9 +463,15 @@ async function kort40FetchSlots(jar: CookieJar, date: string): Promise<unknown> 
     // Retry on 429 / 5xx with backoff and jitter.
     const isTransient = res.status === 429 || res.status >= 500;
     if (isTransient && attempt < MAX_ATTEMPTS) {
-      const base = Math.min(8000, 800 * Math.pow(2, attempt - 1));
-      const jitter = Math.floor(Math.random() * 400);
-      await new Promise((r) => setTimeout(r, base + jitter));
+      const retryAfterHeader = res.headers.get('retry-after');
+      const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+      if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+        await new Promise((r) => setTimeout(r, retryAfterSeconds * 1000));
+      } else {
+        const base = Math.min(12000, 1200 * Math.pow(2, attempt - 1));
+        const jitter = Math.floor(Math.random() * 600);
+        await new Promise((r) => setTimeout(r, base + jitter));
+      }
       continue;
     }
     break;
