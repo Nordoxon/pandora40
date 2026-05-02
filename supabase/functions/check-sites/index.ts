@@ -1206,26 +1206,6 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
         message: `Telegram: ${msg} — поставлено в очередь повторов`,
       });
     }
-  } else if (newSlots.length > 0) {
-    // First-time sightings — record silently in history, no Telegram spam.
-    const summary = summarizeFreedSlots(newSlots);
-    // Detect whether these are "new horizon" slots (from a date that just rolled
-    // into the 30-day lookahead) vs. mid-day appearances. The end of the horizon
-    // is the latest date currently present in allSlots.
-    const horizonEnd = allSlots.reduce<string | null>(
-      (acc, s) => (acc === null || s.date > acc ? s.date : acc),
-      null,
-    );
-    const allFromHorizonEdge =
-      horizonEnd !== null && newSlots.every((s) => s.date === horizonEnd);
-    const reason = allFromHorizonEdge
-      ? `новый день в 30-дневном окне (${formatDateRu(horizonEnd!)})`
-      : 'новые ключи слотов в расписании сайта';
-    await supabase.from('change_history').insert({
-      site_id: site.id,
-      event_type: 'baseline',
-      message: `Зарегистрировано ${newSlots.length} новых ${pluralSlots(newSlots.length)} — ${reason}: ${summary}`,
-    });
   }
 
   if (errors.length > 0) {
