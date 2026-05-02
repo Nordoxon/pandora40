@@ -51,19 +51,15 @@ Deno.serve(async (req) => {
     'X-CSRFToken': session.csrftoken ?? '',
   };
 
-  const probes = [
+  const probes: string[] = [
     `/api/get-available-times/?date=${date}`,
-    `/api/get_courts/`,
-    `/api/get_courts/?date=${date}`,
-    `/api/get_courts_status/`,
-    `/api/get_courts_status/?date=${date}`,
-    `/api/booked_times/`,
-    `/api/booked_times/?date=${date}`,
-    `/api/hot_reservation/`,
-    `/api/hot_reservation/?date=${date}`,
-    `/api/currentday/`,
-    `/api/count_games/`,
+    `/api/booked_times/?month=5&year=2026`,
+    `/api/booked_times/?month=5&year=2026&date=${date}`,
   ];
+  // Probe every visible hour for this date
+  for (let h = 6; h <= 23; h++) {
+    probes.push(`/api/get_courts_status/?date=${date}&hour=${h}`);
+  }
 
   const results: Array<{ path: string; status: number; preview: string }> = [];
   for (const p of probes) {
