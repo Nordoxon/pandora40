@@ -1075,16 +1075,13 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     seenMap.set((r as any).slot_key, { last_busy_at: (r as any).last_busy_at });
   }
 
-  // A slot is "freshly freed" if:
-  //   - it's currently free (in allSlots),
-  //   - it was NOT free in the previous snapshot (=> a real transition just happened),
-  //   - we've seen this slot key before AND it was marked busy at some point
-  //     (last_busy_at IS NOT NULL).
-  // First-time-ever sightings are silently absorbed into the baseline.
-  const freedSlots = newSlots.filter((s) => {
-    const prior = seenMap.get(s.key);
-    return prior != null && prior.last_busy_at != null;
-  });
+  // The kort40 schedule is fixed: every day 6:00–24:00 × 2 courts. There is no
+  // such thing as a slot "appearing for the first time" mid-monitoring — if we
+  // see a free slot now that wasn't free in the previous snapshot, it means it
+  // was busy before and just got released (cancellation or a brand-new day in
+  // the 30-day horizon, which functionally is the same: previously unavailable
+  // → now free). So after the very first snapshot, every newSlot is a freed slot.
+  const freedSlots = newSlots;
 
   // Replace stored snapshot
   await supabase.from('kort_slots').delete().eq('site_id', site.id);
@@ -1209,26 +1206,6 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
         message: `Telegram: ${msg} — поставлено в очередь повторов`,
       });
     }
-  } else if (newSlots.length > 0) {
-    // First-time sightings — record silently in history, no Telegram spam.
-    const summary = summarizeFreedSlots(newSlots);
-    // Detect whether these are "new horizon" slots (from a date that just rolled
-    // into the 30-day lookahead) vs. mid-day appearances. The end of the horizon
-    // is the latest date currently present in allSlots.
-    const horizonEnd = allSlots.reduce<string | null>(
-      (acc, s) => (acc === null || s.date > acc ? s.date : acc),
-      null,
-    );
-    const allFromHorizonEdge =
-      horizonEnd !== null && newSlots.every((s) => s.date === horizonEnd);
-    const reason = allFromHorizonEdge
-      ? `новый день в 30-дневном окне (${formatDateRu(horizonEnd!)})`
-      : 'новые ключи слотов в расписании сайта';
-    await supabase.from('change_history').insert({
-      site_id: site.id,
-      event_type: 'baseline',
-      message: `Зарегистрировано ${newSlots.length} новых ${pluralSlots(newSlots.length)} — ${reason}: ${summary}`,
-    });
   }
 
   if (errors.length > 0) {
