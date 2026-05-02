@@ -578,7 +578,7 @@ async function kort40FetchClassifiedDay(
   const hours: number[] = [];
   for (let h = KORT40_DAY_START_HOUR; h <= KORT40_DAY_END_HOUR; h++) hours.push(h);
 
-  const HOUR_CONCURRENCY = 6;
+  const HOUR_CONCURRENCY = 3;
   const busyByHour = new Map<number, string[]>();
   const hourErrors: string[] = [];
 
@@ -600,6 +600,10 @@ async function kort40FetchClassifiedDay(
         }
         hourErrors.push(`h=${h}: ${msg}`);
       }
+    }
+    // Small breather between hour-batches to stay under kort40's rate limit.
+    if (i + HOUR_CONCURRENCY < hours.length) {
+      await new Promise((r) => setTimeout(r, 200));
     }
   }
 
