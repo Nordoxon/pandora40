@@ -269,23 +269,12 @@ function isTodayMoscow(date: string): boolean {
   return date === getMoscowNow().toISOString().slice(0, 10);
 }
 
-// kort40 hour numbering, empirically determined by comparing the API payload
-// to the live site UI for 2026-05-02 (16:30 MSK):
-//   API:  available_hours=[6..12, 21,22,23], reserved=[13,14,15,16,18,19,20], hot_available=[17]
-//   UI:   only 17–18 (orange) and 20–21 (green) are bookable for the rest of the day.
-// This means:
-//   • `available_hours` and `reserved` use the END hour of the slot (e.g. 21 ⇒ 20–21).
-//   • `hot_available` uses the START hour of the slot (e.g. 17 ⇒ 17–18).
-// We normalise everything to START hour, which matches our DB schema
-// (`start_time = '17:00'` for the 17–18 slot).
-function endHourToStart(hour: number): number {
-  // 21 (end) → 20 (start); 0 (end, i.e. midnight) → 23 (start)
-  return (hour + 23) % 24;
-}
-
-// `hot_available` is already in start-hour form — no conversion needed.
-function hotHourToStart(hour: number): number {
-  return hour;
+// The live kort40 frontend builds the clock ring from the `reserved` and
+// `reserved_hours_by_current_user` arrays after shifting them to the venue's
+// local timezone. It does NOT trust `available_hours` for rendering the ring.
+// `hot_available` is only overlaid for the current local day.
+function shiftKort40ApiHourToLocal(hour: number): number {
+  return ((hour + KORT40_TIMEZONE_OFFSET_HOURS) % 24 + 24) % 24;
 }
 
 function isKort40VisibleHour(hour: number): boolean {
@@ -552,66 +541,19 @@ async function kort40FetchCourtsStatus(
  * Fetch full per-day classified slots for a date using the stable
  * `/api/get-available-times/` response only.
  *
- * We intentionally prefer the legacy single-request path here because the
- * per-hour `/api/get_courts_status/` probing causes persistent 429s from
- * kort40 and breaks the minute-by-minute monitoring loop.
+ * Important: the source of truth for our 30-day calendar must match the live
+ * kort40 frontend, not our earlier interpretation of the payload. The site
+ * renders the day ring from the shifted `reserved` arrays and only uses
+ * `hot_available` for the current local day. Per-hour `get_courts_status`
+ * checks are intentionally skipped here because they solve a different UI
+ * step and also trigger 429s under monitoring load.
  */
 async function kort40FetchClassifiedDay(
   jar: CookieJar,
   date: string,
 ): Promise<{ classified: ClassifiedSlot[]; raw: unknown }> {
   const timesRaw = (await kort40FetchSlots(jar, date)) as Record<string, unknown>;
-  const classified = extractClassifiedSlots(timesRaw, date);
-
-  // /api/get_courts_status/ is only reliable enough for the current Moscow day.
-  // For future dates it tends to under-report availability and collapses the
-  // 30-day calendar to near-empty. So we use the extra verification only for
-  // "today", where the source API still overstates a few late slots.
-  if (!isTodayMoscow(date)) {
-    return { raw: timesRaw, classified };
-  }
-
-  const availableHours = classified
-    .filter((slot) => slot.classification === 'available' && /^\d{2}:\d{2}$/.test(slot.startTime))
-    .map((slot) => Number(slot.startTime.slice(0, 2)))
-    .filter((hour) => Number.isFinite(hour));
-
-  const verifiedBusyByHour = new Map<number, string[]>();
-  const verificationDate = addDaysToYmd(date, 1);
-  for (let i = 0; i < availableHours.length; i++) {
-    const hour = availableHours[i];
-    const status = await kort40FetchCourtsStatus(jar, verificationDate, hour);
-    verifiedBusyByHour.set(hour, status.busy_courts);
-    if (i + 1 < availableHours.length) {
-      await new Promise((r) => setTimeout(r, 180));
-    }
-  }
-
-  return {
-    raw: timesRaw,
-    classified: classified.map((slot) => {
-      if (slot.classification !== 'available' || !/^\d{2}:\d{2}$/.test(slot.startTime)) {
-        return slot;
-      }
-
-      const hour = Number(slot.startTime.slice(0, 2));
-      const busyCourts = verifiedBusyByHour.get(hour);
-      if (!busyCourts) return slot;
-
-      const bothBusy = busyCourts.length >= 2;
-      return {
-        ...slot,
-        classification: bothBusy ? 'busy' as const : 'available' as const,
-        reason: bothBusy ? 'verified_busy_by_courts_status' : 'verified_available_by_courts_status',
-        raw: {
-          ...(slot.raw && typeof slot.raw === 'object' ? slot.raw as Record<string, unknown> : {}),
-          verified_by: 'get_courts_status',
-          verification_date: verificationDate,
-          busy_courts: busyCourts,
-        },
-      };
-    }),
-  };
+  return { raw: timesRaw, classified: extractClassifiedSlots(timesRaw, date) };
 }
 
 /** Fetch logged-in user profile — used to diagnose account-specific blocks. */
@@ -680,10 +622,11 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
   const out: ClassifiedSlot[] = [];
   const seen = new WeakSet<object>();
 
-  // kort40 portal UI does NOT trust available_hours directly.
-  // It renders the visible 06:00–23:00 ring by taking `reserved`
-  // (shifted to local time), `reserved_hours_by_current_user`, `hot_available`
-  // and treating every remaining visible hour as available.
+  // Match the live kort40 clock logic exactly.
+  // The site shifts `reserved` and `reserved_hours_by_current_user` to local time,
+  // treats those hours as unavailable, then marks every remaining visible hour
+  // as available. `hot_available` is only a current-day overlay, not a source of
+  // extra future availability.
   // Handle this top-level shape directly before generic walk.
   if (data && typeof data === 'object' && !Array.isArray(data)) {
     const root = data as Record<string, unknown>;
@@ -723,20 +666,17 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         return out;
       }
 
-      // Normalise everything to START hour (see comment near endHourToStart).
+      // Shift API hours into venue-local visible hours, same as the live site.
       const reservedStart = new Set(
-        toNumberArray(root.reserved).map(endHourToStart).filter(isKort40VisibleHour),
+        toNumberArray(root.reserved).map(shiftKort40ApiHourToLocal).filter(isKort40VisibleHour),
       );
       const userReservedStart = new Set(
         toNumberArray(root.reserved_hours_by_current_user)
-          .map(endHourToStart)
+          .map(shiftKort40ApiHourToLocal)
           .filter(isKort40VisibleHour),
       );
       const hotStart = new Set(
-        toNumberArray(root.hot_available).map(hotHourToStart).filter(isKort40VisibleHour),
-      );
-      const availableStart = new Set(
-        toNumberArray(root.available_hours).map(endHourToStart).filter(isKort40VisibleHour),
+        toNumberArray(root.hot_available).map(shiftKort40ApiHourToLocal).filter(isKort40VisibleHour),
       );
 
       const moscowNow = getMoscowNow();
@@ -749,30 +689,23 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         let classification: SlotClassification;
         let reason: string;
 
-        // Positive classification: a slot is free ONLY if the API explicitly
-        // lists it in `available_hours` or `hot_available` AND it is in the
-        // future. Everything else is busy or not bookable. This matches the
-        // live UI.
+        const isPastSlot = isTodayMoscow && hour <= currentHourMoscow;
+        const isUserReserved = userReservedStart.has(hour);
+        const isReserved = reservedStart.has(hour);
+        const isHotCurrentDay = isTodayMoscow && hotStart.has(hour);
+
         if (isTodayMoscow && hour <= currentHourMoscow) {
           classification = 'not_bookable';
           reason = 'past';
-        } else if (availableStart.has(hour)) {
-          classification = 'available';
-          reason = 'available_hours';
-        } else if (hotStart.has(hour)) {
-          classification = 'available';
-          reason = 'hot_available';
-        } else if (userReservedStart.has(hour)) {
+        } else if (isUserReserved) {
           classification = 'busy';
           reason = 'reserved_hours_by_current_user';
-        } else if (reservedStart.has(hour)) {
+        } else if (isReserved) {
           classification = 'busy';
           reason = 'reserved';
         } else {
-          // Slot is in none of the lists and not in the past — treat as not
-          // bookable (e.g. outside the booking horizon, locked by the venue).
-          classification = 'not_bookable';
-          reason = 'unlisted';
+          classification = 'available';
+          reason = isHotCurrentDay ? 'hot_available' : 'open_by_clock';
         }
 
         out.push({
@@ -786,10 +719,10 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
           raw: {
             hour,
             source: reason,
-            available: availableStart.has(hour),
-            reserved: reservedStart.has(hour),
-            user_reserved: userReservedStart.has(hour),
-            hot_available: hotStart.has(hour),
+            past: isPastSlot,
+            reserved: isReserved,
+            user_reserved: isUserReserved,
+            hot_available: isHotCurrentDay,
           },
         });
       }
