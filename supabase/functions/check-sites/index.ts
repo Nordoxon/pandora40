@@ -1020,10 +1020,9 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   let okResponses = 0;
   let detailMessage: string | null = null;
 
-  // Each date now triggers ~19 sub-requests (1× get-available-times + 18× get_courts_status).
-  // kort40 rate-limits aggressively (429 above ~6 concurrent reqs), so we process dates
-  // strictly serially. Within a date, hours run 3 at a time (see HOUR_CONCURRENCY).
-  const batchSize = 1;
+  // Stable mode: one request per date via get-available-times.
+  // This keeps the full 30-day scan comfortably within the 1-minute cycle.
+  const batchSize = 3;
 
   async function runBatch(batchDates: string[]) {
     const results = await Promise.allSettled(
@@ -1105,8 +1104,8 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       }
     }
 
-    // Pause between dates to keep request rate modest.
-    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 250));
+    // Small pause between date batches so we stay polite to the site.
+    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 150));
   }
 
   // 3) If majority of probes say "closed", treat the whole site as closed
