@@ -1290,16 +1290,22 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     })
     .eq('id', site.id);
 
-  const recoveredFromPartial =
-    typeof site.last_status === 'string' &&
-    (site.last_status.startsWith('partial:') || site.last_status.startsWith('error'));
+  if (errors.length === 0) {
+    const { data: latestHistory } = await supabase
+      .from('change_history')
+      .select('event_type, created_at')
+      .eq('site_id', site.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-  if (recoveredFromPartial && errors.length === 0) {
-    await supabase.from('change_history').insert({
-      site_id: site.id,
-      event_type: 'recovered',
-      message: `Проверка снова в норме: ${allSlots.length} свободных слотов, ошибок запросов нет.`,
-    });
+    if (latestHistory?.event_type === 'error') {
+      await supabase.from('change_history').insert({
+        site_id: site.id,
+        event_type: 'recovered',
+        message: `Проверка снова в норме: ${allSlots.length} свободных слотов, ошибок запросов нет.`,
+      });
+    }
   }
 
   // 5) Notifications
