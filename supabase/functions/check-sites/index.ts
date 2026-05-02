@@ -925,8 +925,9 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   let okResponses = 0;
   let detailMessage: string | null = null;
 
-  // Smaller batch + tiny delay → friendlier to the server
-  const batchSize = 3;
+  // Smaller batch + tiny delay → friendlier to the server.
+  // kort40 starts returning 429 with parallelism > 2, so keep it conservative.
+  const batchSize = 2;
 
   async function runBatch(batchDates: string[]) {
     const results = await Promise.allSettled(batchDates.map((d) => kort40FetchSlots(jar, d)));
@@ -1013,7 +1014,7 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     }
 
     // tiny delay between batches
-    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 200));
+    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 350));
   }
 
   // 3) If majority of probes say "closed", treat the whole site as closed
