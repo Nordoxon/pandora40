@@ -261,6 +261,14 @@ const KORT40_TIMEZONE_OFFSET_HOURS = 3;
 const KORT40_DAY_START_HOUR = 6;
 const KORT40_DAY_END_HOUR = 23;
 
+function getMoscowNow(): Date {
+  return new Date(Date.now() + KORT40_TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000);
+}
+
+function isTodayMoscow(date: string): boolean {
+  return date === getMoscowNow().toISOString().slice(0, 10);
+}
+
 // kort40 hour numbering, empirically determined by comparing the API payload
 // to the live site UI for 2026-05-02 (16:30 MSK):
 //   API:  available_hours=[6..12, 21,22,23], reserved=[13,14,15,16,18,19,20], hot_available=[17]
@@ -555,6 +563,14 @@ async function kort40FetchClassifiedDay(
   const timesRaw = (await kort40FetchSlots(jar, date)) as Record<string, unknown>;
   const classified = extractClassifiedSlots(timesRaw, date);
 
+  // /api/get_courts_status/ is only reliable enough for the current Moscow day.
+  // For future dates it tends to under-report availability and collapses the
+  // 30-day calendar to near-empty. So we use the extra verification only for
+  // "today", where the source API still overstates a few late slots.
+  if (!isTodayMoscow(date)) {
+    return { raw: timesRaw, classified };
+  }
+
   const availableHours = classified
     .filter((slot) => slot.classification === 'available' && /^\d{2}:\d{2}$/.test(slot.startTime))
     .map((slot) => Number(slot.startTime.slice(0, 2)))
@@ -723,8 +739,7 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         toNumberArray(root.available_hours).map(endHourToStart).filter(isKort40VisibleHour),
       );
 
-      const now = new Date();
-      const moscowNow = new Date(now.getTime() + KORT40_TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000);
+      const moscowNow = getMoscowNow();
       const todayMoscow = moscowNow.toISOString().slice(0, 10);
       const currentHourMoscow = moscowNow.getUTCHours();
       const isTodayMoscow = date === todayMoscow;
