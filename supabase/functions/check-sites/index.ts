@@ -472,6 +472,195 @@ async function kort40FetchSlots(jar: CookieJar, date: string): Promise<unknown> 
   throw new Error(`get-available-times ${date} -> ${lastStatus}: ${lastBody.slice(0, 200)}`);
 }
 
+/**
+ * Fetch per-court status for a single (date, hour) via /api/get_courts_status/.
+ * This is the SOURCE OF TRUTH used by the kort40 booking UI:
+ *   { date, hour, busy_courts: ["1","2"] }
+ * A slot is free for the user if at least one of the two courts is NOT in busy_courts.
+ */
+async function kort40FetchCourtsStatus(
+  jar: CookieJar,
+  date: string,
+  hour: number,
+): Promise<{ busy_courts: string[] }> {
+  const MAX_ATTEMPTS = 3;
+  let lastStatus = 0;
+  let lastBody = '';
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const res = await fetch(
+      `${KORT40_BASE}/api/get_courts_status/?date=${date}&hour=${hour}`,
+      {
+        headers: {
+          'User-Agent': UA,
+          Accept: 'application/json',
+          Referer: `${KORT40_BASE}/`,
+          Cookie: jarToHeader(jar),
+          'X-CSRFToken': jar.csrftoken ?? '',
+        },
+      },
+    );
+    const text = await res.text();
+    if (res.ok) {
+      try {
+        const parsed = JSON.parse(text) as { busy_courts?: unknown };
+        const busy = Array.isArray(parsed.busy_courts)
+          ? parsed.busy_courts.map((c) => String(c))
+          : [];
+        return { busy_courts: busy };
+      } catch {
+        throw new Error('CLOSED_HTML');
+      }
+    }
+    lastStatus = res.status;
+    lastBody = text;
+    if (res.status === 401 || res.status === 403) throw new Error(`AUTH_${res.status}`);
+    if (res.status === 404 || res.status === 503) throw new Error(`CLOSED_${res.status}`);
+    const isTransient = res.status === 429 || res.status >= 500;
+    if (isTransient && attempt < MAX_ATTEMPTS) {
+      const base = Math.min(4000, 500 * Math.pow(2, attempt - 1));
+      const jitter = Math.floor(Math.random() * 250);
+      await new Promise((r) => setTimeout(r, base + jitter));
+      continue;
+    }
+    break;
+  }
+  throw new Error(`get_courts_status ${date} h=${hour} -> ${lastStatus}: ${lastBody.slice(0, 200)}`);
+}
+
+/**
+ * Fetch full per-day classified slots for a date by combining:
+ *   • /api/get-available-times/  → for `hot_available` (orange "free game") hours
+ *   • /api/get_courts_status/    → for accurate per-court availability of every hour
+ * Returns ClassifiedSlot[] directly (one row per hour — same shape as the legacy parser).
+ */
+async function kort40FetchClassifiedDay(
+  jar: CookieJar,
+  date: string,
+): Promise<{ classified: ClassifiedSlot[]; raw: unknown }> {
+  // 1) Pull get-available-times once for hot/season-blocked detection.
+  const timesRaw = (await kort40FetchSlots(jar, date)) as Record<string, unknown>;
+
+  // Day fully blocked (e.g. season not opened) — return the same season_blocked
+  // marker the legacy parser would have produced, so existing logic still works.
+  const totalHours =
+    (Array.isArray(timesRaw.available_hours) ? timesRaw.available_hours.length : 0) +
+    (Array.isArray(timesRaw.reserved) ? timesRaw.reserved.length : 0) +
+    (Array.isArray(timesRaw.hot_available) ? timesRaw.hot_available.length : 0) +
+    (Array.isArray(timesRaw.reserved_hours_by_current_user)
+      ? timesRaw.reserved_hours_by_current_user.length
+      : 0);
+  if (totalHours === 0 && typeof timesRaw.detail === 'string' && timesRaw.detail.trim().length > 0) {
+    return {
+      raw: timesRaw,
+      classified: [
+        {
+          key: `${date}|__day_blocked__`,
+          date,
+          startTime: '',
+          endTime: '',
+          court: '—',
+          classification: 'season_blocked',
+          reason: (timesRaw.detail as string).slice(0, 250),
+          raw: { detail: timesRaw.detail },
+        },
+      ],
+    };
+  }
+
+  const hotStart = new Set<number>(
+    (Array.isArray(timesRaw.hot_available) ? (timesRaw.hot_available as unknown[]) : [])
+      .map((h) => Number(h))
+      .filter((h) => Number.isFinite(h) && isKort40VisibleHour(h)),
+  );
+
+  // 2) Fetch get_courts_status for every visible hour (06..23). 18 requests/date.
+  // Run in small concurrent groups to keep latency low without tripping rate limits.
+  const hours: number[] = [];
+  for (let h = KORT40_DAY_START_HOUR; h <= KORT40_DAY_END_HOUR; h++) hours.push(h);
+
+  const HOUR_CONCURRENCY = 6;
+  const busyByHour = new Map<number, string[]>();
+  const hourErrors: string[] = [];
+
+  for (let i = 0; i < hours.length; i += HOUR_CONCURRENCY) {
+    const batch = hours.slice(i, i + HOUR_CONCURRENCY);
+    const results = await Promise.allSettled(
+      batch.map((h) => kort40FetchCourtsStatus(jar, date, h)),
+    );
+    for (let k = 0; k < results.length; k++) {
+      const r = results[k];
+      const h = batch[k];
+      if (r.status === 'fulfilled') {
+        busyByHour.set(h, r.value.busy_courts);
+      } else {
+        const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+        // Auth / closed signals must propagate up so the outer loop can re-login or mark closed.
+        if (msg.startsWith('AUTH_') || msg.startsWith('CLOSED_') || msg === 'CLOSED_HTML') {
+          throw r.reason;
+        }
+        hourErrors.push(`h=${h}: ${msg}`);
+      }
+    }
+  }
+
+  if (hourErrors.length > 0) {
+    // Surface partial-failure as an error so the outer loop skips snapshot/diff
+    // (existing partial-failure handling will then keep the previous baseline).
+    throw new Error(`get_courts_status partial ${date}: ${hourErrors.slice(0, 3).join('; ')}`);
+  }
+
+  // 3) Build classified rows.
+  const now = new Date();
+  const moscowNow = new Date(now.getTime() + KORT40_TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000);
+  const todayMoscow = moscowNow.toISOString().slice(0, 10);
+  const currentHourMoscow = moscowNow.getUTCHours();
+  const isTodayMoscow = date === todayMoscow;
+
+  const classified: ClassifiedSlot[] = [];
+  for (const hour of hours) {
+    const { start, end } = formatHourRange(hour);
+    const busy = busyByHour.get(hour) ?? [];
+    const bothBusy = busy.length >= 2;
+    const anyFree = !bothBusy;
+    const isHot = hotStart.has(hour);
+
+    let classification: SlotClassification;
+    let reason: string;
+
+    if (isTodayMoscow && hour <= currentHourMoscow) {
+      classification = 'not_bookable';
+      reason = 'past';
+    } else if (anyFree) {
+      classification = 'available';
+      reason = isHot ? 'hot_available' : `courts_status busy=[${busy.join(',')}]`;
+    } else {
+      classification = 'busy';
+      reason = 'both_courts_busy';
+    }
+
+    classified.push({
+      key: `${date}|kort40|${start}`,
+      date,
+      startTime: start,
+      endTime: end,
+      court: 'kort40',
+      classification,
+      reason,
+      raw: {
+        hour,
+        busy_courts: busy,
+        hot_available: isHot,
+        source: 'get_courts_status',
+      },
+    });
+  }
+
+  return {
+    raw: { ...timesRaw, _busy_courts_by_hour: Object.fromEntries(busyByHour) },
+    classified,
+  };
+}
+
 /** Fetch logged-in user profile — used to diagnose account-specific blocks. */
 async function kort40FetchProfile(jar: CookieJar): Promise<unknown> {
   const res = await fetch(`${KORT40_BASE}/api/profile/`, {
@@ -946,39 +1135,36 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   let okResponses = 0;
   let detailMessage: string | null = null;
 
-  // Smaller batch + tiny delay → friendlier to the server.
-  // kort40 starts returning 429 with parallelism > 2, so keep it conservative.
+  // Each date now triggers ~19 sub-requests (1× get-available-times + 18× get_courts_status).
+  // Run 2 dates in parallel — that's ~12 concurrent requests to kort40, which empirically
+  // stays under the 429 threshold while letting all 30 dates finish in well under 60s.
   const batchSize = 2;
 
   async function runBatch(batchDates: string[]) {
-    const results = await Promise.allSettled(batchDates.map((d) => kort40FetchSlots(jar, d)));
+    const results = await Promise.allSettled(
+      batchDates.map((d) => kort40FetchClassifiedDay(jar, d)),
+    );
     for (let idx = 0; idx < results.length; idx++) {
       const r = results[idx];
       const d = batchDates[idx];
       if (r.status === 'fulfilled') {
         okResponses++;
-        if (firstRawSample === null) firstRawSample = r.value;
-        // Surface the raw shape for EVERY date so we can diagnose
-        // "API returns 200 OK but our parser finds 0 slots" or
-        // timezone-shift mismatches.
+        if (firstRawSample === null) firstRawSample = r.value.raw;
         try {
-          console.log(
-            `kort40 raw ${d}:`,
-            JSON.stringify(r.value).slice(0, 2000),
-          );
+          console.log(`kort40 raw ${d}:`, JSON.stringify(r.value.raw).slice(0, 2000));
         } catch (_) {
           console.log(`kort40 raw ${d}: <unserializable>`);
         }
-        // Capture per-date "blocked" message from kort40 (e.g. season not opened).
+        const rawObj = r.value.raw as Record<string, unknown> | null;
         if (
           detailMessage === null &&
-          r.value &&
-          typeof r.value === 'object' &&
-          typeof (r.value as any).detail === 'string'
+          rawObj &&
+          typeof rawObj === 'object' &&
+          typeof (rawObj as any).detail === 'string'
         ) {
-          detailMessage = (r.value as any).detail as string;
+          detailMessage = (rawObj as any).detail as string;
         }
-        const classified = extractClassifiedSlots(r.value, d);
+        const classified = r.value.classified;
         allClassified.push(...classified);
         for (const c of classified) {
           if (c.classification === 'available') {
