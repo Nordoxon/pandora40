@@ -291,6 +291,12 @@ function formatHourRange(hour: number): { start: string; end: string } {
   };
 }
 
+function addDaysToYmd(date: string, days: number): string {
+  const base = new Date(`${date}T00:00:00.000Z`);
+  base.setUTCDate(base.getUTCDate() + days);
+  return base.toISOString().slice(0, 10);
+}
+
 /**
  * Result of attempting to obtain a kort40 session.
  * status:
@@ -555,9 +561,10 @@ async function kort40FetchClassifiedDay(
     .filter((hour) => Number.isFinite(hour));
 
   const verifiedBusyByHour = new Map<number, string[]>();
+  const verificationDate = addDaysToYmd(date, 1);
   for (let i = 0; i < availableHours.length; i++) {
     const hour = availableHours[i];
-    const status = await kort40FetchCourtsStatus(jar, date, hour);
+    const status = await kort40FetchCourtsStatus(jar, verificationDate, hour);
     verifiedBusyByHour.set(hour, status.busy_courts);
     if (i + 1 < availableHours.length) {
       await new Promise((r) => setTimeout(r, 180));
@@ -583,6 +590,7 @@ async function kort40FetchClassifiedDay(
         raw: {
           ...(slot.raw && typeof slot.raw === 'object' ? slot.raw as Record<string, unknown> : {}),
           verified_by: 'get_courts_status',
+          verification_date: verificationDate,
           busy_courts: busyCourts,
         },
       };
