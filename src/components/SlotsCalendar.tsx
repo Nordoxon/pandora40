@@ -228,10 +228,10 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
                 : intensity === 0
                   ? "bg-clay/15"
                   : intensity === 1
-                    ? "bg-primary/15"
+                    ? "bg-warning/25"
                     : intensity === 2
-                      ? "bg-primary/30"
-                      : "bg-primary/55";
+                      ? "bg-primary/35"
+                      : "bg-primary/70";
 
             const ring = isSelected
               ? "ring-2 ring-primary"
@@ -272,15 +272,15 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
             занято / нет свободных
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="size-3 rounded-sm bg-primary/15" />
+            <span className="size-3 rounded-sm bg-warning/25" />
             1–2
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="size-3 rounded-sm bg-primary/30" />
+            <span className="size-3 rounded-sm bg-primary/35" />
             3–7
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="size-3 rounded-sm bg-primary/55" />
+            <span className="size-3 rounded-sm bg-primary/70" />
             8+
           </div>
         </div>
