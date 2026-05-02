@@ -1135,39 +1135,36 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   let okResponses = 0;
   let detailMessage: string | null = null;
 
-  // Smaller batch + tiny delay → friendlier to the server.
-  // kort40 starts returning 429 with parallelism > 2, so keep it conservative.
+  // Each date now triggers ~19 sub-requests (1× get-available-times + 18× get_courts_status).
+  // Run 2 dates in parallel — that's ~12 concurrent requests to kort40, which empirically
+  // stays under the 429 threshold while letting all 30 dates finish in well under 60s.
   const batchSize = 2;
 
   async function runBatch(batchDates: string[]) {
-    const results = await Promise.allSettled(batchDates.map((d) => kort40FetchSlots(jar, d)));
+    const results = await Promise.allSettled(
+      batchDates.map((d) => kort40FetchClassifiedDay(jar, d)),
+    );
     for (let idx = 0; idx < results.length; idx++) {
       const r = results[idx];
       const d = batchDates[idx];
       if (r.status === 'fulfilled') {
         okResponses++;
-        if (firstRawSample === null) firstRawSample = r.value;
-        // Surface the raw shape for EVERY date so we can diagnose
-        // "API returns 200 OK but our parser finds 0 slots" or
-        // timezone-shift mismatches.
+        if (firstRawSample === null) firstRawSample = r.value.raw;
         try {
-          console.log(
-            `kort40 raw ${d}:`,
-            JSON.stringify(r.value).slice(0, 2000),
-          );
+          console.log(`kort40 raw ${d}:`, JSON.stringify(r.value.raw).slice(0, 2000));
         } catch (_) {
           console.log(`kort40 raw ${d}: <unserializable>`);
         }
-        // Capture per-date "blocked" message from kort40 (e.g. season not opened).
+        const rawObj = r.value.raw as Record<string, unknown> | null;
         if (
           detailMessage === null &&
-          r.value &&
-          typeof r.value === 'object' &&
-          typeof (r.value as any).detail === 'string'
+          rawObj &&
+          typeof rawObj === 'object' &&
+          typeof (rawObj as any).detail === 'string'
         ) {
-          detailMessage = (r.value as any).detail as string;
+          detailMessage = (rawObj as any).detail as string;
         }
-        const classified = extractClassifiedSlots(r.value, d);
+        const classified = r.value.classified;
         allClassified.push(...classified);
         for (const c of classified) {
           if (c.classification === 'available') {
