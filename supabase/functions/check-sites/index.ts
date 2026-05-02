@@ -1140,9 +1140,9 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   let detailMessage: string | null = null;
 
   // Each date now triggers ~19 sub-requests (1× get-available-times + 18× get_courts_status).
-  // Run 2 dates in parallel — that's ~12 concurrent requests to kort40, which empirically
-  // stays under the 429 threshold while letting all 30 dates finish in well under 60s.
-  const batchSize = 2;
+  // kort40 rate-limits aggressively (429 above ~6 concurrent reqs), so we process dates
+  // strictly serially. Within a date, hours run 3 at a time (see HOUR_CONCURRENCY).
+  const batchSize = 1;
 
   async function runBatch(batchDates: string[]) {
     const results = await Promise.allSettled(
@@ -1224,8 +1224,8 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       }
     }
 
-    // tiny delay between batches
-    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 350));
+    // Pause between dates to keep request rate modest.
+    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 250));
   }
 
   // 3) If majority of probes say "closed", treat the whole site as closed
