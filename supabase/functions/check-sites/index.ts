@@ -1064,6 +1064,35 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       `total=${allClassified.length}`,
   );
 
+  // 3b) If ANY date failed to fetch (429, network, etc.), the snapshot is partial.
+  // Using it for diff would falsely flag dropped-then-recovered slots as "freed".
+  // Skip baseline + diff + snapshot replacement; just record the error and retry next tick.
+  if (errors.length > 0) {
+    await supabase
+      .from('watched_sites')
+      .update({
+        last_checked_at: new Date().toISOString(),
+        last_status:
+          `partial: ${errors.length} errors • snapshot skipped • ` +
+          `free=${auditCounts.available} busy=${auditCounts.busy}`,
+        // do NOT change current_hash / season_status — keep previous baseline intact
+        next_check_at: new Date(Date.now() + OPEN_INTERVAL_MS).toISOString(),
+      })
+      .eq('id', site.id);
+    await supabase.from('change_history').insert({
+      site_id: site.id,
+      event_type: 'error',
+      message:
+        `Частичная проверка: ${errors.length} запрос(ов) не прошли — снапшот не обновлён, повтор на следующей минуте. ` +
+        `Первая ошибка: ${errors[0].slice(0, 200)}`,
+    });
+    return {
+      status: 'partial' as const,
+      errors: errors.length,
+      okResponses,
+    };
+  }
+
   // 4) Site is OPEN — diff slots vs previous snapshot
   const { data: prevSlots, error: prevErr } = await supabase
     .from('kort_slots')
