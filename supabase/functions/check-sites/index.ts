@@ -622,10 +622,11 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
   const out: ClassifiedSlot[] = [];
   const seen = new WeakSet<object>();
 
-  // kort40 portal UI does NOT trust available_hours directly.
-  // It renders the visible 06:00–23:00 ring by taking `reserved`
-  // (shifted to local time), `reserved_hours_by_current_user`, `hot_available`
-  // and treating every remaining visible hour as available.
+  // Match the live kort40 clock logic exactly.
+  // The site shifts `reserved` and `reserved_hours_by_current_user` to local time,
+  // treats those hours as unavailable, then marks every remaining visible hour
+  // as available. `hot_available` is only a current-day overlay, not a source of
+  // extra future availability.
   // Handle this top-level shape directly before generic walk.
   if (data && typeof data === 'object' && !Array.isArray(data)) {
     const root = data as Record<string, unknown>;
@@ -665,20 +666,17 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         return out;
       }
 
-      // Normalise everything to START hour (see comment near endHourToStart).
+      // Shift API hours into venue-local visible hours, same as the live site.
       const reservedStart = new Set(
-        toNumberArray(root.reserved).map(endHourToStart).filter(isKort40VisibleHour),
+        toNumberArray(root.reserved).map(shiftKort40ApiHourToLocal).filter(isKort40VisibleHour),
       );
       const userReservedStart = new Set(
         toNumberArray(root.reserved_hours_by_current_user)
-          .map(endHourToStart)
+          .map(shiftKort40ApiHourToLocal)
           .filter(isKort40VisibleHour),
       );
       const hotStart = new Set(
-        toNumberArray(root.hot_available).map(hotHourToStart).filter(isKort40VisibleHour),
-      );
-      const availableStart = new Set(
-        toNumberArray(root.available_hours).map(endHourToStart).filter(isKort40VisibleHour),
+        toNumberArray(root.hot_available).map(shiftKort40ApiHourToLocal).filter(isKort40VisibleHour),
       );
 
       const moscowNow = getMoscowNow();
@@ -691,30 +689,23 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         let classification: SlotClassification;
         let reason: string;
 
-        // Positive classification: a slot is free ONLY if the API explicitly
-        // lists it in `available_hours` or `hot_available` AND it is in the
-        // future. Everything else is busy or not bookable. This matches the
-        // live UI.
+        const isPastSlot = isTodayMoscow && hour <= currentHourMoscow;
+        const isUserReserved = userReservedStart.has(hour);
+        const isReserved = reservedStart.has(hour);
+        const isHotCurrentDay = isTodayMoscow && hotStart.has(hour);
+
         if (isTodayMoscow && hour <= currentHourMoscow) {
           classification = 'not_bookable';
           reason = 'past';
-        } else if (availableStart.has(hour)) {
-          classification = 'available';
-          reason = 'available_hours';
-        } else if (hotStart.has(hour)) {
-          classification = 'available';
-          reason = 'hot_available';
-        } else if (userReservedStart.has(hour)) {
+        } else if (isUserReserved) {
           classification = 'busy';
           reason = 'reserved_hours_by_current_user';
-        } else if (reservedStart.has(hour)) {
+        } else if (isReserved) {
           classification = 'busy';
           reason = 'reserved';
         } else {
-          // Slot is in none of the lists and not in the past — treat as not
-          // bookable (e.g. outside the booking horizon, locked by the venue).
-          classification = 'not_bookable';
-          reason = 'unlisted';
+          classification = 'available';
+          reason = isHotCurrentDay ? 'hot_available' : 'open_by_clock';
         }
 
         out.push({
@@ -728,10 +719,10 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
           raw: {
             hour,
             source: reason,
-            available: availableStart.has(hour),
-            reserved: reservedStart.has(hour),
-            user_reserved: userReservedStart.has(hour),
-            hot_available: hotStart.has(hour),
+            past: isPastSlot,
+            reserved: isReserved,
+            user_reserved: isUserReserved,
+            hot_available: isHotCurrentDay,
           },
         });
       }
