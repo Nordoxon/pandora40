@@ -256,6 +256,7 @@ function jarToHeader(jar: CookieJar): string {
 const KORT40_BASE = 'https://kort40.online';
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
+const KORT40_TIMEZONE_OFFSET_HOURS = 3;
 const KORT40_DAY_START_HOUR = 6;
 const KORT40_DAY_END_HOUR = 23;
 
