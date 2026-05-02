@@ -1290,6 +1290,18 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     })
     .eq('id', site.id);
 
+  const recoveredFromPartial =
+    typeof site.last_status === 'string' &&
+    (site.last_status.startsWith('partial:') || site.last_status.startsWith('error'));
+
+  if (recoveredFromPartial && errors.length === 0) {
+    await supabase.from('change_history').insert({
+      site_id: site.id,
+      event_type: 'recovered',
+      message: `Проверка снова в норме: ${allSlots.length} свободных слотов, ошибок запросов нет.`,
+    });
+  }
+
   // 5) Notifications
   if (seasonJustOpened) {
     // Season just transitioned closed/unknown → open
