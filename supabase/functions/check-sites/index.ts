@@ -1028,8 +1028,8 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   let detailMessage: string | null = null;
 
   // Stable mode: one request per date via get-available-times.
-  // This keeps the full 30-day scan comfortably within the 1-minute cycle.
-  const batchSize = 3;
+  // kort40 still rate-limits bursts, so dates are processed one-by-one.
+  const batchSize = 1;
 
   async function runBatch(batchDates: string[]) {
     const results = await Promise.allSettled(
@@ -1111,8 +1111,8 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       }
     }
 
-    // Small pause between date batches so we stay polite to the site.
-    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 150));
+    // Explicit pacing between dates to reduce burstiness and avoid 429.
+    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 900));
   }
 
   // 3) If majority of probes say "closed", treat the whole site as closed
