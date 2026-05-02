@@ -53,14 +53,16 @@ Deno.serve(async (req) => {
 
   const probes = [
     `/api/get-available-times/?date=${date}`,
-    `/api/get-available-times/?date=${date}&court=1`,
-    `/api/get-available-times/?date=${date}&court=2`,
-    `/api/get-available-times/?date=${date}&court_id=1`,
-    `/api/get-available-times/?date=${date}&court_id=2`,
-    `/api/courts/`,
-    `/api/courts`,
-    `/api/get-courts/`,
-    `/reserve/?date=${date}`,
+    `/api/get_courts/`,
+    `/api/get_courts/?date=${date}`,
+    `/api/get_courts_status/`,
+    `/api/get_courts_status/?date=${date}`,
+    `/api/booked_times/`,
+    `/api/booked_times/?date=${date}`,
+    `/api/hot_reservation/`,
+    `/api/hot_reservation/?date=${date}`,
+    `/api/currentday/`,
+    `/api/count_games/`,
   ];
 
   const results: Array<{ path: string; status: number; preview: string }> = [];
