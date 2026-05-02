@@ -29,6 +29,8 @@ export function HistoryFeed({ entries, site }: { entries: HistoryEntry[]; site: 
             ? Trophy
             : e.event_type === "season_close"
               ? Pause
+              : e.event_type === "recovered"
+                ? CheckCircle2
               : e.event_type === "change"
                 ? AlertTriangle
                 : e.event_type === "error"
@@ -41,6 +43,8 @@ export function HistoryFeed({ entries, site }: { entries: HistoryEntry[]; site: 
             ? "text-primary border-l-primary"
             : e.event_type === "season_close"
               ? "text-muted-foreground border-l-muted-foreground"
+              : e.event_type === "recovered"
+                ? "text-primary border-l-primary"
               : e.event_type === "change"
                 ? "text-warning border-l-warning"
                 : e.event_type === "error"
