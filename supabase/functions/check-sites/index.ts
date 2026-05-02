@@ -260,13 +260,22 @@ const KORT40_TIMEZONE_OFFSET_HOURS = 3;
 const KORT40_DAY_START_HOUR = 6;
 const KORT40_DAY_END_HOUR = 23;
 
-// kort40 already returns hours in Moscow local time, matching what the user
-// sees on the booking circle UI. We previously applied a +3 shift here, which
-// caused a systematic 3-hour misalignment between our classification and the
-// real site (e.g. `reserved=[14]` was being treated as a busy slot at 17:00,
-// while on the site it was a busy slot at 14:00 and 17:00 was actually a free
-// `hot_available` slot). Treat the values as-is.
-function shiftKort40Hour(hour: number): number {
+// kort40 hour numbering, empirically determined by comparing the API payload
+// to the live site UI for 2026-05-02 (16:30 MSK):
+//   API:  available_hours=[6..12, 21,22,23], reserved=[13,14,15,16,18,19,20], hot_available=[17]
+//   UI:   only 17–18 (orange) and 20–21 (green) are bookable for the rest of the day.
+// This means:
+//   • `available_hours` and `reserved` use the END hour of the slot (e.g. 21 ⇒ 20–21).
+//   • `hot_available` uses the START hour of the slot (e.g. 17 ⇒ 17–18).
+// We normalise everything to START hour, which matches our DB schema
+// (`start_time = '17:00'` for the 17–18 slot).
+function endHourToStart(hour: number): number {
+  // 21 (end) → 20 (start); 0 (end, i.e. midnight) → 23 (start)
+  return (hour + 23) % 24;
+}
+
+// `hot_available` is already in start-hour form — no conversion needed.
+function hotHourToStart(hour: number): number {
   return hour;
 }
 
@@ -572,18 +581,21 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         return out;
       }
 
-      const reservedShifted = new Set(
-        toNumberArray(root.reserved).map(shiftKort40Hour).filter(isKort40VisibleHour),
+      // Normalise everything to START hour (see comment near endHourToStart).
+      const reservedStart = new Set(
+        toNumberArray(root.reserved).map(endHourToStart).filter(isKort40VisibleHour),
       );
-      const userReservedShifted = new Set(
+      const userReservedStart = new Set(
         toNumberArray(root.reserved_hours_by_current_user)
-          .map(shiftKort40Hour)
+          .map(endHourToStart)
           .filter(isKort40VisibleHour),
       );
-      const hotVisible = new Set(
-        toNumberArray(root.hot_available).map(shiftKort40Hour).filter(isKort40VisibleHour),
+      const hotStart = new Set(
+        toNumberArray(root.hot_available).map(hotHourToStart).filter(isKort40VisibleHour),
       );
-      const rawAvailable = new Set(toNumberArray(root.available_hours));
+      const availableStart = new Set(
+        toNumberArray(root.available_hours).map(endHourToStart).filter(isKort40VisibleHour),
+      );
 
       const now = new Date();
       const moscowNow = new Date(now.getTime() + KORT40_TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000);
@@ -596,28 +608,30 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         let classification: SlotClassification;
         let reason: string;
 
-        if (userReservedShifted.has(hour)) {
-          classification = 'busy';
-          reason = 'reserved_hours_by_current_user';
-        } else if (reservedShifted.has(hour)) {
-          classification = 'busy';
-          reason = 'reserved';
-        } else if (isTodayMoscow && hour <= currentHourMoscow) {
+        // Positive classification: a slot is free ONLY if the API explicitly
+        // lists it in `available_hours` or `hot_available` AND it is in the
+        // future. Everything else is busy or not bookable. This matches the
+        // live UI.
+        if (isTodayMoscow && hour <= currentHourMoscow) {
           classification = 'not_bookable';
           reason = 'past';
-        } else {
-          // IMPORTANT: `hot_available` is not a reliable blocker for booking.
-          // On real kort40 snapshots it can contain hours that are visibly green
-          // and bookable on the official site (for example 2026-05-09 21:00).
-          // So we only trust hard negative signals (`reserved`,
-          // `reserved_hours_by_current_user`, past time). Everything else in the
-          // visible ring is treated as available.
+        } else if (availableStart.has(hour)) {
           classification = 'available';
-          reason = rawAvailable.has(hour)
-            ? 'available_hours'
-            : hotVisible.has(hour)
-              ? 'hot_available_visible'
-              : 'derived_free';
+          reason = 'available_hours';
+        } else if (hotStart.has(hour)) {
+          classification = 'available';
+          reason = 'hot_available';
+        } else if (userReservedStart.has(hour)) {
+          classification = 'busy';
+          reason = 'reserved_hours_by_current_user';
+        } else if (reservedStart.has(hour)) {
+          classification = 'busy';
+          reason = 'reserved';
+        } else {
+          // Slot is in none of the lists and not in the past — treat as not
+          // bookable (e.g. outside the booking horizon, locked by the venue).
+          classification = 'not_bookable';
+          reason = 'unlisted';
         }
 
         out.push({
@@ -631,9 +645,10 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
           raw: {
             hour,
             source: reason,
-            reserved_shifted: reservedShifted.has(hour),
-            user_reserved_shifted: userReservedShifted.has(hour),
-            hot_available: hotVisible.has(hour),
+            available: availableStart.has(hour),
+            reserved: reservedStart.has(hour),
+            user_reserved: userReservedStart.has(hour),
+            hot_available: hotStart.has(hour),
           },
         });
       }
