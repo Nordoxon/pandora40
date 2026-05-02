@@ -254,6 +254,7 @@ function jarToHeader(jar: CookieJar): string {
 }
 
 const KORT40_BASE = 'https://kort40.online';
+const CHECK_SITES_VERSION = 'kort40-stable-v2';
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
 const KORT40_TIMEZONE_OFFSET_HOURS = 3;
@@ -1367,6 +1368,8 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
+
+  console.log(`check-sites version ${CHECK_SITES_VERSION}`);
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
