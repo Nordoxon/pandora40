@@ -463,9 +463,15 @@ async function kort40FetchSlots(jar: CookieJar, date: string): Promise<unknown> 
     // Retry on 429 / 5xx with backoff and jitter.
     const isTransient = res.status === 429 || res.status >= 500;
     if (isTransient && attempt < MAX_ATTEMPTS) {
-      const base = Math.min(8000, 800 * Math.pow(2, attempt - 1));
-      const jitter = Math.floor(Math.random() * 400);
-      await new Promise((r) => setTimeout(r, base + jitter));
+      const retryAfterHeader = res.headers.get('retry-after');
+      const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+      if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+        await new Promise((r) => setTimeout(r, retryAfterSeconds * 1000));
+      } else {
+        const base = Math.min(12000, 1200 * Math.pow(2, attempt - 1));
+        const jitter = Math.floor(Math.random() * 600);
+        await new Promise((r) => setTimeout(r, base + jitter));
+      }
       continue;
     }
     break;
@@ -1022,8 +1028,8 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   let detailMessage: string | null = null;
 
   // Stable mode: one request per date via get-available-times.
-  // This keeps the full 30-day scan comfortably within the 1-minute cycle.
-  const batchSize = 3;
+  // kort40 still rate-limits bursts, so dates are processed one-by-one.
+  const batchSize = 1;
 
   async function runBatch(batchDates: string[]) {
     const results = await Promise.allSettled(
@@ -1105,8 +1111,8 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       }
     }
 
-    // Small pause between date batches so we stay polite to the site.
-    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 150));
+    // Explicit pacing between dates to reduce burstiness and avoid 429.
+    if (i + batchSize < dates.length) await new Promise((r) => setTimeout(r, 900));
   }
 
   // 3) If majority of probes say "closed", treat the whole site as closed
@@ -1289,6 +1295,24 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       next_check_at: new Date(Date.now() + OPEN_INTERVAL_MS).toISOString(),
     })
     .eq('id', site.id);
+
+  if (errors.length === 0) {
+    const { data: latestHistory } = await supabase
+      .from('change_history')
+      .select('event_type, created_at')
+      .eq('site_id', site.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (latestHistory?.event_type === 'error') {
+      await supabase.from('change_history').insert({
+        site_id: site.id,
+        event_type: 'recovered',
+        message: `Проверка снова в норме: ${allSlots.length} свободных слотов, ошибок запросов нет.`,
+      });
+    }
+  }
 
   // 5) Notifications
   if (seasonJustOpened) {
