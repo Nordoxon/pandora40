@@ -131,6 +131,37 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
     return map;
   }, [slots]);
 
+  const densityScale = useMemo(() => {
+    const uniquePositiveCounts = [...new Set(slots.map((slot) => slot.slot_date).map((date) => slotsByDate.get(date)?.length ?? 0))]
+      .filter((count) => count > 0)
+      .sort((a, b) => a - b);
+
+    const countToLevel = new Map<number, 1 | 2 | 3>();
+
+    if (uniquePositiveCounts.length === 1) {
+      countToLevel.set(uniquePositiveCounts[0], 2);
+    } else {
+      uniquePositiveCounts.forEach((count, index) => {
+        const ratio = uniquePositiveCounts.length === 1 ? 1 : index / (uniquePositiveCounts.length - 1);
+        const level = ratio < 0.34 ? 1 : ratio < 0.67 ? 2 : 3;
+        countToLevel.set(count, level as 1 | 2 | 3);
+      });
+    }
+
+    const legend = [1, 2, 3].map((level) => {
+      const counts = uniquePositiveCounts.filter((count) => countToLevel.get(count) === level);
+      if (counts.length === 0) return null;
+      const min = counts[0];
+      const max = counts[counts.length - 1];
+      return {
+        level: level as 1 | 2 | 3,
+        label: min === max ? `${min}` : `${min}–${max}`,
+      };
+    }).filter((entry): entry is { level: 1 | 2 | 3; label: string } => entry !== null);
+
+    return { countToLevel, legend };
+  }, [slots, slotsByDate]);
+
   const grid = useMemo(() => buildMonthGrid(monthDate), [monthDate]);
   const monthTitle = `${RU_MONTHS[monthDate.getMonth()]} ${monthDate.getFullYear()}`;
 
@@ -217,10 +248,7 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
             const isToday = isSameDay(d, today);
 
             const free = dayCount > 0;
-            const intensity =
-              dayCount === 0 ? 0 :
-              dayCount < 3 ? 1 :
-              dayCount < 8 ? 2 : 3;
+            const intensity = dayCount === 0 ? 0 : (densityScale.countToLevel.get(dayCount) ?? 2);
 
             const bg =
               !inHorizon
@@ -271,18 +299,20 @@ export function SlotsCalendar({ siteId, lastCheckedAt }: Props) {
             <span className="size-3 rounded-sm bg-clay/15" />
             занято / нет свободных
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="size-3 rounded-sm bg-warning/25" />
-            1–2
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="size-3 rounded-sm bg-primary/35" />
-            3–7
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="size-3 rounded-sm bg-primary/70" />
-            8+
-          </div>
+          {densityScale.legend.map((entry) => (
+            <div key={entry.level} className="flex items-center gap-1.5">
+              <span
+                className={`size-3 rounded-sm ${
+                  entry.level === 1
+                    ? "bg-warning/25"
+                    : entry.level === 2
+                      ? "bg-primary/35"
+                      : "bg-primary/70"
+                }`}
+              />
+              {entry.label}
+            </div>
+          ))}
         </div>
       </Card>
 
