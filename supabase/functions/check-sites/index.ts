@@ -609,9 +609,13 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         let reason: string;
 
         // Positive classification: a slot is free ONLY if the API explicitly
-        // lists it in `available_hours` or `hot_available`. Everything else is
-        // either busy or otherwise not bookable. This matches the live UI.
-        if (availableStart.has(hour)) {
+        // lists it in `available_hours` or `hot_available` AND it is in the
+        // future. Everything else is busy or not bookable. This matches the
+        // live UI.
+        if (isTodayMoscow && hour <= currentHourMoscow) {
+          classification = 'not_bookable';
+          reason = 'past';
+        } else if (availableStart.has(hour)) {
           classification = 'available';
           reason = 'available_hours';
         } else if (hotStart.has(hour)) {
@@ -623,9 +627,6 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         } else if (reservedStart.has(hour)) {
           classification = 'busy';
           reason = 'reserved';
-        } else if (isTodayMoscow && hour <= currentHourMoscow) {
-          classification = 'not_bookable';
-          reason = 'past';
         } else {
           // Slot is in none of the lists and not in the past — treat as not
           // bookable (e.g. outside the booking horizon, locked by the venue).
