@@ -1212,13 +1212,20 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
     seenMap.set((r as any).slot_key, { last_busy_at: (r as any).last_busy_at });
   }
 
-  // The kort40 schedule is fixed: every day 6:00–24:00 × 2 courts. There is no
-  // such thing as a slot "appearing for the first time" mid-monitoring — if we
-  // see a free slot now that wasn't free in the previous snapshot, it means it
-  // was busy before and just got released (cancellation or a brand-new day in
-  // the 30-day horizon, which functionally is the same: previously unavailable
-  // → now free). So after the very first snapshot, every newSlot is a freed slot.
-  const freedSlots = newSlots;
+  // Distinguish "slot freed up on a day we already track" from "a brand-new day
+  // just rolled into the 30-day horizon". For a new day we don't want to spam
+  // Telegram pretending slots were freed — they were simply never in our window.
+  const prevDates = new Set(
+    (prevSlots ?? []).map((s: any) => String(s.slot_key).split('|')[0]),
+  );
+  const freedSlots = newSlots.filter((s) => prevDates.has(s.date));
+  const newDaySlots = newSlots.filter((s) => !prevDates.has(s.date));
+  if (newDaySlots.length > 0) {
+    const newDays = [...new Set(newDaySlots.map((s) => s.date))].sort();
+    console.log(
+      `kort40: skipping notification for ${newDaySlots.length} slots on new days entering horizon: ${newDays.join(', ')}`,
+    );
+  }
 
   // Replace stored snapshot
   await supabase.from('kort_slots').delete().eq('site_id', site.id);
