@@ -622,11 +622,11 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
   const out: ClassifiedSlot[] = [];
   const seen = new WeakSet<object>();
 
-  // Match the live kort40 clock logic exactly.
-  // The site shifts `reserved` and `reserved_hours_by_current_user` to local time,
-  // treats those hours as unavailable, then marks every remaining visible hour
-  // as available. `hot_available` is only a current-day overlay, not a source of
-  // extra future availability.
+  // Match the live kort40 payload conservatively.
+  // For the 30-day calendar we should only treat hours explicitly listed in
+  // `available_hours` as free. Earlier we inferred availability from
+  // “not reserved”, which produced false positives on future dates.
+  // `hot_available` is only an additional overlay for the current day.
   // Handle this top-level shape directly before generic walk.
   if (data && typeof data === 'object' && !Array.isArray(data)) {
     const root = data as Record<string, unknown>;
@@ -666,17 +666,17 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         return out;
       }
 
-      // Shift API hours into venue-local visible hours, same as the live site.
+      const availableStart = new Set(
+        toNumberArray(root.available_hours).filter(isKort40VisibleHour),
+      );
       const reservedStart = new Set(
-        toNumberArray(root.reserved).map(shiftKort40ApiHourToLocal).filter(isKort40VisibleHour),
+        toNumberArray(root.reserved).filter(isKort40VisibleHour),
       );
       const userReservedStart = new Set(
-        toNumberArray(root.reserved_hours_by_current_user)
-          .map(shiftKort40ApiHourToLocal)
-          .filter(isKort40VisibleHour),
+        toNumberArray(root.reserved_hours_by_current_user).filter(isKort40VisibleHour),
       );
       const hotStart = new Set(
-        toNumberArray(root.hot_available).map(shiftKort40ApiHourToLocal).filter(isKort40VisibleHour),
+        toNumberArray(root.hot_available).filter(isKort40VisibleHour),
       );
 
       const moscowNow = getMoscowNow();
@@ -693,6 +693,7 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         const isUserReserved = userReservedStart.has(hour);
         const isReserved = reservedStart.has(hour);
         const isHotCurrentDay = isTodayMoscow && hotStart.has(hour);
+        const isExplicitlyAvailable = availableStart.has(hour);
 
         if (isTodayMoscow && hour <= currentHourMoscow) {
           classification = 'not_bookable';
@@ -700,12 +701,18 @@ function extractClassifiedSlots(data: unknown, date: string): ClassifiedSlot[] {
         } else if (isUserReserved) {
           classification = 'busy';
           reason = 'reserved_hours_by_current_user';
+        } else if (isExplicitlyAvailable) {
+          classification = 'available';
+          reason = 'available_hours';
+        } else if (isHotCurrentDay) {
+          classification = 'available';
+          reason = 'hot_available';
         } else if (isReserved) {
           classification = 'busy';
           reason = 'reserved';
         } else {
-          classification = 'available';
-          reason = isHotCurrentDay ? 'hot_available' : 'open_by_clock';
+          classification = 'not_bookable';
+          reason = 'not_listed_in_available_hours';
         }
 
         out.push({
