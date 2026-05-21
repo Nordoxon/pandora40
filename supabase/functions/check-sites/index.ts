@@ -1222,9 +1222,15 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   // Distinguish "slot freed up on a day we already track" from "a brand-new day
   // just rolled into the 30-day horizon". For a new day we don't want to spam
   // Telegram pretending slots were freed — they were simply never in our window.
-  const prevDates = new Set(
-    (prevSlots ?? []).map((s: any) => String(s.slot_key).split('|')[0]),
-  );
+  // IMPORTANT: derive from kort_slots_seen (all ever-observed slots, free OR busy),
+  // not from kort_slots (which only stores currently-free slots). Otherwise a date
+  // where every hour was busy on the previous check would look "new" and we'd
+  // silently swallow a real cancellation notification.
+  const prevDates = new Set<string>();
+  for (const k of seenMap.keys()) {
+    const date = String(k).split('|')[0];
+    if (date) prevDates.add(date);
+  }
   const freedSlots = newSlots.filter((s) => prevDates.has(s.date));
   const newDaySlots = newSlots.filter((s) => !prevDates.has(s.date));
   if (newDaySlots.length > 0) {
