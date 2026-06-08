@@ -1284,6 +1284,31 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
       if (upErr) console.error('kort_slots_seen upsert error:', upErr.message);
     }
   }
+
+  // Record a per-day marker for EVERY date we successfully scanned this run,
+  // even days where all hours are busy (which produce no free-slot rows above).
+  // Without this, a day that was fully busy when it entered the horizon has zero
+  // history in kort_slots_seen, so the first cancellation on that day looks like
+  // "a brand-new day rolling into the window" and the notification is swallowed.
+  // These markers feed `prevDates` on subsequent runs so freed slots are detected.
+  const scannedDates = [...new Set(allClassified.map((c) => c.date))];
+  if (scannedDates.length > 0) {
+    const dayMarkers = scannedDates.map((d) => ({
+      site_id: site.id,
+      slot_key: `${d}|__day_seen__`,
+      slot_date: d,
+      start_time: '',
+      end_time: '',
+      court_name: '—',
+      last_seen_at: nowIso,
+    }));
+    for (let i = 0; i < dayMarkers.length; i += 500) {
+      const { error: markErr } = await supabase
+        .from('kort_slots_seen')
+        .upsert(dayMarkers.slice(i, i + 500), { onConflict: 'site_id,slot_key' });
+      if (markErr) console.error('kort_slots_seen day-marker upsert error:', markErr.message);
+    }
+  }
   if (goneKeys.length > 0) {
     // Chunk the IN(...) filter to keep request size sane.
     for (let i = 0; i < goneKeys.length; i += 200) {
