@@ -1200,7 +1200,6 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
 
   const prevKeys = new Set((prevSlots ?? []).map((s: any) => s.slot_key));
   const currentKeys = new Set(allSlots.map((s) => s.key));
-  const isFirstSnapshot = prevKeys.size === 0;
   const newSlots = allSlots.filter((s) => !prevKeys.has(s.key));
   const goneKeys = [...prevKeys].filter((k) => !currentKeys.has(k));
   const seasonJustOpened = site.season_status !== 'open';
@@ -1218,6 +1217,13 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   for (const r of seenRows ?? []) {
     seenMap.set((r as any).slot_key, { last_busy_at: (r as any).last_busy_at });
   }
+
+  // "First snapshot" must be judged by whether we have EVER observed any slot
+  // for this site (kort_slots_seen), NOT by whether free slots currently exist
+  // in kort_slots. Otherwise, whenever every hour is busy (free=0), kort_slots
+  // is emptied and the next freed slot is mistaken for a brand-new baseline —
+  // silently swallowing the cancellation notification.
+  const isFirstSnapshot = seenMap.size === 0;
 
   // Distinguish "slot freed up on a day we already track" from "a brand-new day
   // just rolled into the 30-day horizon". For a new day we don't want to spam
