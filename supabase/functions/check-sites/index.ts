@@ -254,7 +254,7 @@ function jarToHeader(jar: CookieJar): string {
 }
 
 const KORT40_BASE = 'https://kort40.online';
-const CHECK_SITES_VERSION = 'kort40-stable-v2';
+const CHECK_SITES_VERSION = 'kort40-day-markers-v3';
 const UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
 const KORT40_TIMEZONE_OFFSET_HOURS = 3;
@@ -1204,18 +1204,20 @@ async function processKort40Site(supabase: any, site: any, daysAhead = 30) {
   const goneKeys = [...prevKeys].filter((k) => !currentKeys.has(k));
   const seasonJustOpened = site.season_status !== 'open';
 
-  // Load "seen" history to distinguish "slot appeared for the first time"
-  // from "slot was busy and now freed up". We only notify for the latter,
-  // otherwise long-horizon evergreen-free slots would spam the bot.
+  // Load only per-day markers. Loading the entire long-term slot history is
+  // unsafe here: the backend API caps an unpaginated response at 1000 rows,
+  // so once the history grew beyond that limit, recent day markers vanished
+  // from this result and real cancellations were mistaken for new horizon days.
   const { data: seenRows, error: seenErr } = await supabase
     .from('kort_slots_seen')
-    .select('slot_key,last_busy_at')
-    .eq('site_id', site.id);
+    .select('slot_key')
+    .eq('site_id', site.id)
+    .like('slot_key', '%|__day_seen__');
   if (seenErr) throw new Error(`db read kort_slots_seen: ${seenErr.message}`);
 
-  const seenMap = new Map<string, { last_busy_at: string | null }>();
+  const seenMap = new Map<string, true>();
   for (const r of seenRows ?? []) {
-    seenMap.set((r as any).slot_key, { last_busy_at: (r as any).last_busy_at });
+    seenMap.set((r as any).slot_key, true);
   }
 
   // "First snapshot" must be judged by whether we have EVER observed any slot
@@ -1478,6 +1480,16 @@ Deno.serve(async (req) => {
       });
     }
     const profile = await kort40FetchProfile(login.jar).catch((e) => ({ error: String(e) }));
+    const statusDate = url.searchParams.get('status_date');
+    const statusHourParam = Number(url.searchParams.get('status_hour'));
+    if (statusDate && Number.isInteger(statusHourParam) && isKort40VisibleHour(statusHourParam)) {
+      const status = await kort40FetchCourtsStatus(login.jar, statusDate, statusHourParam)
+        .catch((e) => ({ error: e instanceof Error ? e.message : String(e) }));
+      return new Response(
+        JSON.stringify({ profile, statusDate, statusHour: statusHourParam, status }, null, 2),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
     const today = new Date();
     const probeDates: string[] = [];
     const horizonParam = Number(url.searchParams.get('days') ?? '30');
