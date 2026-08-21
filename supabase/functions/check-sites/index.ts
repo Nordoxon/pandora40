@@ -1478,6 +1478,16 @@ Deno.serve(async (req) => {
       });
     }
     const profile = await kort40FetchProfile(login.jar).catch((e) => ({ error: String(e) }));
+    const statusDate = url.searchParams.get('status_date');
+    const statusHourParam = Number(url.searchParams.get('status_hour'));
+    if (statusDate && Number.isInteger(statusHourParam) && isKort40VisibleHour(statusHourParam)) {
+      const status = await kort40FetchCourtsStatus(login.jar, statusDate, statusHourParam)
+        .catch((e) => ({ error: e instanceof Error ? e.message : String(e) }));
+      return new Response(
+        JSON.stringify({ profile, statusDate, statusHour: statusHourParam, status }, null, 2),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
     const today = new Date();
     const probeDates: string[] = [];
     const horizonParam = Number(url.searchParams.get('days') ?? '30');
